@@ -56,6 +56,7 @@ from lerobot.robots import (  # noqa: F401
     RobotConfig,
     make_robot_from_config,
     so_follower,
+    xarm,
 )
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower.robot_kinematic_processor import (
@@ -65,11 +66,13 @@ from lerobot.robots.so_follower.robot_kinematic_processor import (
     GripperVelocityToJoint,
     InverseKinematicsRLStep,
 )
+from lerobot.robots.xarm.robot_cartesian_processor import CartesianDeltaToTargetStep, RobotActionToTensorStep
 from lerobot.teleoperators import (
     gamepad,  # noqa: F401
     keyboard,  # noqa: F401
     make_teleoperator_from_config,
     so_leader,  # noqa: F401
+    space_mouse,  # noqa: F401
 )
 from lerobot.teleoperators.teleoperator import Teleoperator
 from lerobot.teleoperators.utils import TeleopEvents
@@ -153,7 +156,14 @@ class RobotEnv(gym.Env):
         self.current_step = 0
         self.episode_data = None
 
-        self._joint_names = [f"{key}.pos" for key in self.robot.bus.motors]
+        if hasattr(self.robot, "bus"):
+            self._state_keys = [f"{motor}.pos" for motor in self.robot.bus.motors]
+            self._action_keys = self._state_keys
+        else:
+            # Robots without a motor bus (e.g. arms controlled in Cartesian space) expose their
+            # proprioceptive state as float observation features.
+            self._state_keys = [key for key, ft in self.robot.observation_features.items() if ft is float]
+            self._action_keys = list(self.robot.action_features)
         self._image_keys = self.robot.cameras.keys()
 
         self.reset_pose = reset_pose
@@ -161,7 +171,6 @@ class RobotEnv(gym.Env):
 
         self.use_gripper = use_gripper
 
-        self._joint_names = list(self.robot.bus.motors.keys())
         self._raw_joint_positions = None
 
         self._setup_spaces()
@@ -169,8 +178,8 @@ class RobotEnv(gym.Env):
     def _get_observation(self) -> RobotObservation:
         """Get current robot observation including joint positions and camera images."""
         obs_dict = self.robot.get_observation()
-        raw_joint_joint_position = {f"{name}.pos": obs_dict[f"{name}.pos"] for name in self._joint_names}
-        joint_positions = np.array([raw_joint_joint_position[f"{name}.pos"] for name in self._joint_names])
+        raw_joint_joint_position = {key: obs_dict[key] for key in self._state_keys}
+        joint_positions = np.array([raw_joint_joint_position[key] for key in self._state_keys])
 
         images = {key: obs_dict[key] for key in self._image_keys}
 
@@ -236,7 +245,12 @@ class RobotEnv(gym.Env):
         # Reset the robot
         # self.robot.reset()
         start_time = time.perf_counter()
-        if self.reset_pose is not None:
+        if hasattr(self.robot, "reset_to_home"):
+            # Robots that move to their home configuration themselves, clearing any controller fault.
+            log_say("Reset the environment.", play_sounds=True)
+            self.robot.reset_to_home(self.reset_pose)
+            log_say("Reset the environment done.", play_sounds=True)
+        elif self.reset_pose is not None:
             log_say("Reset the environment.", play_sounds=True)
             reset_follower_position(self.robot, np.array(self.reset_pose))
             log_say("Reset the environment done.", play_sounds=True)
@@ -249,18 +263,18 @@ class RobotEnv(gym.Env):
         self.current_step = 0
         self.episode_data = None
         obs = self._get_observation()
-        self._raw_joint_positions = {f"{key}.pos": obs[f"{key}.pos"] for key in self._joint_names}
+        self._raw_joint_positions = {key: obs[key] for key in self._state_keys}
         return obs, {TeleopEvents.IS_INTERVENTION: False}
 
     def step(self, action) -> tuple[RobotObservation, float, bool, bool, dict[str, Any]]:
         """Execute one environment step with given action."""
-        joint_targets_dict = {f"{key}.pos": action[i] for i, key in enumerate(self.robot.bus.motors.keys())}
+        joint_targets_dict = {key: action[i] for i, key in enumerate(self._action_keys)}
 
         self.robot.send_action(joint_targets_dict)
 
         obs = self._get_observation()
 
-        self._raw_joint_positions = {f"{key}.pos": obs[f"{key}.pos"] for key in self._joint_names}
+        self._raw_joint_positions = {key: obs[key] for key in self._state_keys}
 
         if self.display_cameras:
             self.render()
@@ -270,13 +284,23 @@ class RobotEnv(gym.Env):
         reward = 0.0
         terminated = False
         truncated = False
+        info: dict[Any, Any] = {TeleopEvents.IS_INTERVENTION: False}
+
+        # A controller fault (e.g. a collision) stops the robot: end the episode as truncated, not failed.
+        # The next `reset()` recovers the robot.
+        if getattr(self.robot, "has_fault", False):
+            logging.warning(
+                f"Robot fault, ending the episode: {getattr(self.robot, 'fault_description', '')}"
+            )
+            truncated = True
+            info["robot_fault"] = True
 
         return (
             obs,
             reward,
             terminated,
             truncated,
-            {TeleopEvents.IS_INTERVENTION: False},
+            info,
         )
 
     def render(self) -> None:
@@ -344,12 +368,14 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
         cfg.processor.observation.display_cameras if cfg.processor.observation is not None else False
     )
     reset_pose = cfg.processor.reset.fixed_reset_joint_positions if cfg.processor.reset is not None else None
+    reset_time_s = cfg.processor.reset.reset_time_s if cfg.processor.reset is not None else 5.0
 
     env = RobotEnv(
         robot=robot,
         use_gripper=use_gripper,
         display_cameras=display_cameras,
         reset_pose=reset_pose,
+        reset_time_s=reset_time_s,
     )
 
     return env, teleop_device
@@ -407,12 +433,16 @@ def make_processors(
         )
 
     # Full processor pipeline for real robot environment
-    # Get robot and motor information for kinematics
-    motor_names = list(env.robot.bus.motors.keys())
+    ik_cfg = cfg.processor.inverse_kinematics
+    # Without a URDF, the robot's controller does the inverse kinematics: it takes Cartesian targets directly.
+    native_cartesian = ik_cfg is not None and ik_cfg.urdf_path is None
 
     # Set up kinematics solver if inverse kinematics is configured
     kinematics_solver = None
-    if cfg.processor.inverse_kinematics is not None:
+    motor_names: list[str] = []
+    if ik_cfg is not None and not native_cartesian:
+        # Get robot and motor information for kinematics
+        motor_names = list(env.robot.bus.motors.keys())
         kinematics_solver = RobotKinematics(
             urdf_path=cfg.processor.inverse_kinematics.urdf_path,
             target_frame_name=cfg.processor.inverse_kinematics.target_frame_name,
@@ -521,6 +551,31 @@ def make_processors(
         ]
         action_pipeline_steps.extend(inverse_kinematics_steps)
         action_pipeline_steps.append(RobotActionToPolicyActionProcessorStep(motor_names=motor_names))
+    elif native_cartesian:
+        if ik_cfg.end_effector_step_sizes is None:
+            raise ValueError(
+                "`inverse_kinematics.end_effector_step_sizes` is required for Cartesian control."
+            )
+        if ik_cfg.end_effector_bounds is None:
+            logging.warning(
+                "No `inverse_kinematics.end_effector_bounds` set: end-effector targets are not clipped."
+            )
+        action_pipeline_steps.extend(
+            [
+                MapTensorToDeltaActionDictStep(
+                    use_gripper=cfg.processor.gripper.use_gripper
+                    if cfg.processor.gripper is not None
+                    else False
+                ),
+                MapDeltaActionToRobotActionStep(),
+                CartesianDeltaToTargetStep(
+                    end_effector_step_sizes=ik_cfg.end_effector_step_sizes,
+                    end_effector_bounds=ik_cfg.end_effector_bounds,
+                    delta_reference=ik_cfg.delta_reference,
+                ),
+                RobotActionToTensorStep(action_keys=list(env.robot.action_features)),
+            ]
+        )
 
     return DataProcessorPipeline(
         steps=env_pipeline_steps, to_transition=identity_transition, to_output=identity_transition

@@ -258,6 +258,9 @@ class InverseKinematicsConfig:
     target_frame_name: str | None = None
     end_effector_bounds: dict[str, list[float]] | None = None
     end_effector_step_sizes: dict[str, float] | None = None
+    # Without a `urdf_path` the robot's controller does the IK. Pose the end-effector delta is applied to:
+    # "measured" (current pose, as in rail-berkeley/hil-serl) or "commanded" (previous target).
+    delta_reference: str = "measured"
 
 
 @dataclass

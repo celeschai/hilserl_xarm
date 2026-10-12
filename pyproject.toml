@@ -83,7 +83,6 @@ dependencies = [
     # Build tools (required by opencv-python-headless on some platforms)
     "cmake>=3.29.0.1,<4.2.0",
     "setuptools>=71.0.0,<82.0.0",  # torch 2.11 requires setuptools<82; a higher cap makes the resolver downgrade torch
-    "xarm-python-sdk>=1.18.4",
 ]
 
 # Optional dependencies
@@ -180,6 +179,9 @@ robstride = ["lerobot[can-dep]"]
 openarms = ["lerobot[damiao]"]
 gamepad = ["lerobot[pygame-dep]", "hidapi>=0.14.0,<0.15.0"]
 spacemouse = ["pyspacemouse>=2.1.0", "lerobot[pynput-dep]"]
+xarm = ["xarm-python-sdk>=1.18.4,<2.0.0"]
+# xArm7 + SpaceMouse + wrist RealSense HIL-SERL setup, see examples/xarm_hilserl/README.md
+xarm_hilserl = ["lerobot[xarm]", "lerobot[spacemouse]", "lerobot[intelrealsense]", "lerobot[hilserl]", "lerobot[viz]"]
 hopejr = ["lerobot[feetech]", "lerobot[pygame-dep]"]
 lekiwi = ["lerobot[feetech]", "lerobot[pyzmq-dep]"]
 unitree_g1 = [
@@ -319,6 +321,7 @@ all = [
     "lerobot[robstride]",
     "lerobot[gamepad]",
     "lerobot[spacemouse]",
+    "lerobot[xarm]",
     "lerobot[hopejr]",
     "lerobot[lekiwi]",
     "lerobot[openarms]",
