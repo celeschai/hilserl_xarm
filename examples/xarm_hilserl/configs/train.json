@@ -68,9 +68,9 @@
       },
       "observation.state": {
         "min": [
-          0.2,
-          -0.3,
-          0.0,
+          0.1328,
+          -0.2614,
+          -0.1409,
           0.0,
           -0.1,
           -0.1,
@@ -78,9 +78,9 @@
           -10.0
         ],
         "max": [
-          0.6,
-          0.3,
-          0.4,
+          0.5058,
+          0.3011,
+          0.2491,
           1.0,
           0.1,
           0.1,
@@ -184,7 +184,15 @@
         "gripper_penalty": -0.02
       },
       "reset": {
-        "fixed_reset_joint_positions": null,
+        "fixed_reset_joint_positions": [
+            6.53,
+            33.98,
+            -0.01,
+            32.99,
+            -0.0,
+            -1.01,
+            6.35
+          ],
         "reset_time_s": 5.0,
         "control_time_s": 20.0,
         "terminate_on_success": true
@@ -192,7 +200,18 @@
       "inverse_kinematics": {
         "urdf_path": null,
         "target_frame_name": null,
-        "end_effector_bounds": null,
+        "end_effector_bounds": {
+          "min": [
+            0.1328,
+            -0.2614,
+            -0.1409
+          ],
+          "max": [
+            0.5058,
+            0.3011,
+            0.2491
+          ]
+        },
         "end_effector_step_sizes": {
           "x": 0.01,
           "y": 0.01,

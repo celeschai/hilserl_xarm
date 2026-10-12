@@ -129,7 +129,7 @@ The robot / workspace values live in both `env.json` and `train.json` (one confi
 ```bash
 uv run python examples/xarm_hilserl/teleoperate.py \
     --robot.cameras='{wrist: {type: intelrealsense, serial_number_or_name: "Intel RealSense D435I", width: 640, height: 480, fps: 30}}' \
-    --home_joints_deg='[0, 0, 0, 90, 0, 90, 0]' \
+    --home_joints_deg='[0, 0, 0, 0, 0, 0, 0]' \
     --write_configs=true
 ```
 
@@ -149,6 +149,16 @@ On exit the script prints the values it found:
 - `policy.dataset_stats` (derived from the box and step sizes).
 
 With `--write_configs=true` it then asks `Write these values into …env.json, …train.json? [y/N]`. Answer `y` only after a good run: a run that ended in an error or a bad final pose should not overwrite your configs. Without the flag, nothing is written.
+
+To edit the configs by hand instead, the printed values go here:
+
+| Printed value                                                       | `env.json`                                                                                  | `train.json`           |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------- |
+| `end_effector_bounds`, `end_effector_step_sizes`, `delta_reference` | `env.processor.inverse_kinematics`                                                          | same path              |
+| `fixed_reset_joint_positions`                                       | `env.processor.reset.fixed_reset_joint_positions` (only this key; keep `reset_time_s` etc.) | same path              |
+| `policy.dataset_stats`                                              | not used                                                                                    | `policy.dataset_stats` |
+
+`env.processor.observation` holds observation-processing options (e.g. `add_joint_velocity_to_observation`), not stats; leave it as is. Later steps fill two more fields in both files: the crop in `env.processor.image_preprocessing` (step 4) and the classifier checkpoint in `env.processor.reward_classifier.pretrained_path` (step 5).
 
 Then set the Studio safety boundary a few centimeters outside the box.
 
