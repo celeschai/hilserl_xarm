@@ -202,3 +202,28 @@ def test_cartesian_pipeline_time_limit(env, robot):
             env, transition, torch.tensor([0.0, 0.0, 0.0, 1.0]), env_processor, action_processor
         )
     assert transition[TransitionKey.TRUNCATED]
+
+
+def test_example_configs_parse_through_entry_points():
+    """The xArm example configs must parse with only the RL entry modules imported (camera registration)."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    configs = Path(__file__).resolve().parents[2] / "examples" / "xarm_hilserl" / "configs"
+    script = f"""
+import draccus
+import lerobot.rl.gym_manipulator as gym_manipulator
+import lerobot.rl.learner  # noqa: F401
+from lerobot.rl.train_rl import TrainRLServerPipelineConfig
+
+env = draccus.parse(gym_manipulator.GymManipulatorConfig, config_path={str(configs / "env.json")!r}, args=[])
+train = draccus.parse(TrainRLServerPipelineConfig, config_path={str(configs / "train.json")!r}, args=[])
+
+from lerobot.cameras.realsense import RealSenseCameraConfig
+assert isinstance(env.env.robot.cameras["wrist"], RealSenseCameraConfig)
+assert isinstance(train.env.robot.cameras["wrist"], RealSenseCameraConfig)
+"""
+    # The camera config is imported only after parsing, in a fresh interpreter, so nothing pre-registers it.
+    result = subprocess.run([sys.executable, "-W", "ignore", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-2000:]

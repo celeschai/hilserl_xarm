@@ -47,14 +47,15 @@ Code involved:
 
 ## Hardware and I/O sources
 
-| Device                              | Interface                         | Library           | Used for                                           |
-| ----------------------------------- | --------------------------------- | ----------------- | -------------------------------------------------- |
-| xArm7 + control box                 | Ethernet, `192.168.1.235`         | `xarm-python-sdk` | Arm motion, TCP pose                               |
-| xArm Gripper                        | Tool Modbus, through the xArm SDK | `xarm-python-sdk` | Open / close, opening read-back                    |
-| 3Dconnexion SpaceMouse Compact      | USB HID (`/dev/hidraw*`)          | `pyspacemouse`    | Arm xyz motion + gripper buttons                   |
-| Intel RealSense D435i, on the wrist | USB 3                             | `pyrealsense2`    | Wrist RGB image (depth is not used)                |
-| Keyboard                            | X11 session                       | `pynput`          | Intervention, success / failure, re-record         |
-| GPU                                 | CUDA                              | PyTorch           | Learner (SAC updates) and actor (policy inference) |
+| Device                                                               | Interface                         | Library           | Used for                                                                      |
+| -------------------------------------------------------------------- | --------------------------------- | ----------------- | ----------------------------------------------------------------------------- |
+| xArm7 + control box                                                  | Ethernet, `192.168.1.235`         | `xarm-python-sdk` | Arm motion, TCP pose                                                          |
+| xArm Gripper                                                         | Tool Modbus, through the xArm SDK | `xarm-python-sdk` | Open / close, opening read-back                                               |
+| 3Dconnexion SpaceMouse Compact                                       | USB HID (`/dev/hidraw*`)          | `pyspacemouse`    | Arm xyz motion + gripper buttons                                              |
+| Intel RealSense D435i, on the wrist (serial `134322070906`)          | USB 3                             | `pyrealsense2`    | `wrist` image: close view of the gripper and object (RGB, depth not used)     |
+| Intel RealSense D405, fixed beside the table (serial `261122273645`) | USB 3                             | `pyrealsense2`    | `side` image: the whole scene, so the object is visible wherever it is placed |
+| Keyboard                                                             | X11 session                       | `pynput`          | Intervention, success / failure, re-record                                    |
+| GPU                                                                  | CUDA                              | PyTorch           | Learner (SAC updates) and actor (policy inference)                            |
 
 > [!WARNING]
 > `pynput` captures the keyboard **globally**: the keys below trigger events whichever window has focus. Don't type in other windows while a session is running.
@@ -83,7 +84,11 @@ Code involved:
      echo 'KERNEL=="hidraw*", ATTRS{idVendor}=="256f", MODE="0666"' | sudo tee /etc/udev/rules.d/99-spacemouse.rules
      sudo udevadm control --reload-rules && sudo udevadm trigger
      ```
-3. **Camera.** The configs select the camera by name (`"Intel RealSense D435I"`), which works while it is the only D435i plugged in. Otherwise use its serial number from `lerobot-find-cameras realsense`.
+3. **Cameras.** The configs select each camera by serial number. Both must be on USB 3 ports and cables (USB 2 drops frames).
+   - `rs-enumerate-devices -s` lists the connected RealSense cameras and their serials.
+   - `realsense-viewer` shows them live, which is useful for positioning and for trying `exposure` / `gain`.
+   - `uv run lerobot-find-cameras realsense` saves a few frames per camera to `outputs/captured_images/`, exactly as lerobot sees them.
+   - A camera can only be opened by one program at a time. Close the viewer before running any lerobot command.
 4. **UFACTORY Studio.** These are controller settings, persistent and enforced by the controller even if Python crashes:
    - **TCP offset and payload** of the xArm Gripper, so the reported pose is the fingertip and collision detection is accurate.
    - **Safety boundary**: slightly larger than the soft box (`end_effector_bounds`) you'll find in step 1.
@@ -128,8 +133,8 @@ The robot / workspace values live in both `env.json` and `train.json` (one confi
 
 ```bash
 uv run python examples/xarm_hilserl/teleoperate.py \
-    --robot.cameras='{wrist: {type: intelrealsense, serial_number_or_name: "Intel RealSense D435I", width: 640, height: 480, fps: 30}}' \
-    --home_joints_deg='[0, 0, 0, 0, 0, 0, 0]' \
+    --robot.cameras='{wrist: {type: intelrealsense, serial_number_or_name: "134322070906", width: 640, height: 480, fps: 30}}' \
+    --home_joints_deg='[0.1, 7.9, 0, 14, 0, 6.1, 0]' \
     --write_configs=true
 ```
 
@@ -205,29 +210,46 @@ For each episode:
 
 Press **`r`** to discard an attempt that went wrong: like rail-berkeley/hil-serl, keep only successful demos (about 20, `num_episodes_to_record`).
 
-The dataset is written to `~/.cache/huggingface/lerobot/local/xarm7_hilserl_demos` at full camera resolution, so step 4 can crop it.
+The dataset is written to `~/.cache/huggingface/lerobot/local/xarm7_hilserl_demos`, with both camera images at full resolution so step 4 can crop them. Demos must contain every camera the policy uses: after adding, removing or moving a camera, record them again.
 
-### 4. Crop the wrist image to the task region
+### 4. Crop and resize the demo images
+
+**This step is always needed, even if you keep the full frame.** The policy takes 128×128 images (`[3, 128, 128]` in `train.json`) but the demos were recorded at 640×480. `crop_dataset_roi` writes the 128×128 copy, `local/xarm7_hilserl_demos_cropped_resized`, which the learner loads as the offline dataset. **Choosing a smaller box is optional.**
+
+Pick a box per camera:
+
+| Camera                       | What to keep                                                                                                                                                                                                                             | Crop?                                             |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `side` (fixed)               | The table area where the object can be, plus the space the gripper moves through. Leave out chairs, desks and walls: anything that changes between sessions distracts the policy.                                                        | Yes, usually a clear benefit                      |
+| `wrist` (moves with the arm) | Everything that can matter during the task: the fingertips and wherever the object can appear in the view. The box is fixed in the image, not on the table, so a tight box around where the object sits in one frame loses it in others. | Often the full frame, or a generous centre square |
+
+Keep boxes roughly square, because they are resized to 128×128. The full 640×480 frame gets squashed slightly, which is fine as long as training uses the same setting, and the configs make sure it does.
+
+**Option A: draw the boxes.** The crop tool needs OpenCV with window support. lerobot installs the windowless build, so add the GUI build for this command only:
 
 ```bash
-uv run python -m lerobot.rl.crop_dataset_roi --repo-id local/xarm7_hilserl_demos
+uv run --with "opencv-python>=4.12,<4.14" python -m lerobot.rl.crop_dataset_roi --repo-id local/xarm7_hilserl_demos
 ```
 
-1. Draw a rectangle around the region the task happens in.
-2. Press `c`.
+It shows the first frame of each camera in turn. Draw a rectangle and press `c` for each. It prints the boxes as `[top, left, height, width]` in camera pixels and writes the 128×128 dataset.
 
-The script prints the crop as `[top, left, height, width]` in camera pixels. It also writes the cropped 128×128 dataset `local/xarm7_hilserl_demos_cropped_resized`, which is the offline dataset for training.
+**Option B: type the boxes (no window).** For example, full frame for both cameras:
 
-Paste the crop into `env.processor.image_preprocessing` of both configs:
+```bash
+echo '{"observation.images.wrist": [0, 0, 480, 640], "observation.images.side": [0, 0, 480, 640]}' > /tmp/crop.json
+uv run python -m lerobot.rl.crop_dataset_roi --repo-id local/xarm7_hilserl_demos --crop-params-path /tmp/crop.json
+```
 
-- `env.json`: set `crop_params_dict` to `{"observation.images.wrist": [top, left, height, width]}` and `resize_size` to `[128, 128]`. Both were `null` (full resolution) for the demos.
-- `train.json`: replace the placeholder `[0, 0, 480, 640]` (the full frame) in `crop_params_dict`.
+Then put the same boxes into `env.processor.image_preprocessing` of both configs, so live images are processed exactly like the demos:
+
+- `env.json`: set `crop_params_dict` to the boxes (both camera keys) and `resize_size` to `[128, 128]`. Both were `null` (full resolution) for the demos.
+- `train.json`: replace the full-frame placeholders `[0, 0, 480, 640]` in `crop_params_dict`. If you kept the full frame, leave them.
 
 Recordings made from now on are already cropped to 128×128.
 
 ### 5. Train the reward classifier
 
-The classifier detects success from the wrist image; it gives the reward and ends successful episodes during training. First record labeled data:
+The classifier detects success from the camera images (both cameras); it gives the reward and ends successful episodes during training. First record labeled data:
 
 ```bash
 uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/configs/env.json \
@@ -314,16 +336,18 @@ The robot runs the policy for `eval.n_episodes` episodes, with the same resets, 
 
 ## Tuning and troubleshooting
 
-| Symptom / knob                                                  | What to do                                                                                                                                                                       |
-| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Arm moves after releasing the puck                              | Use `delta_reference: "measured"`. Keep `robot.max_linear_speed_mm_s` above `step size × fps`.                                                                                   |
-| Step size                                                       | Fixed once demos are recorded. To change it, record the demos again.                                                                                                             |
-| `temperature_init` (`algorithm`)                                | 0.01 by default. Higher means more exploration, but interventions then have less effect.                                                                                         |
-| `policy_parameters_push_frequency`                              | Seconds between weight updates on the actor; 2 s by default.                                                                                                                     |
-| Loop slower than 10 Hz                                          | The actor only warns when policy inference is too slow. Robot I/O (TCP and gripper reads, camera) is timed by the summary `teleoperate.py` prints on exit. Check it there first. |
-| Replay buffer memory                                            | Buffers live in CPU RAM (`storage_device: cpu`), about 20 GB per 100k transitions. Reduce `online_buffer_capacity` / `offline_buffer_capacity` if needed.                        |
-| Reward classifier unreliable                                    | It only sees the wrist camera. If success isn't visible from the wrist, add a fixed side camera to `robot.cameras` and to the configs' features.                                 |
-| SpaceMouse not found                                            | Check the udev rule above and that `ls -l /dev/hidraw*` is readable.                                                                                                             |
-| Keyboard keys ignored                                           | `pynput` needs an X11 session (not Wayland or SSH without a display).                                                                                                            |
-| `pyrealsense2` fails to install                                 | Use Python 3.12 or 3.13.                                                                                                                                                         |
-| `src/lerobot/teleoperators/space_mouse/xarm_spacemouse_test.py` | An earlier stand-alone test script, not used here. Move it out of `src/` before opening a PR.                                                                                    |
+| Symptom / knob                                                  | What to do                                                                                                                                                                                                                 |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arm moves after releasing the puck                              | Use `delta_reference: "measured"`. Keep `robot.max_linear_speed_mm_s` above `step size × fps`.                                                                                                                             |
+| Step size                                                       | Fixed once demos are recorded. To change it, record the demos again.                                                                                                                                                       |
+| `temperature_init` (`algorithm`)                                | 0.01 by default. Higher means more exploration, but interventions then have less effect.                                                                                                                                   |
+| `policy_parameters_push_frequency`                              | Seconds between weight updates on the actor; 2 s by default.                                                                                                                                                               |
+| Loop slower than 10 Hz                                          | The actor only warns when policy inference is too slow. Robot I/O (TCP and gripper reads, camera) is timed by the summary `teleoperate.py` prints on exit. Check it there first.                                           |
+| Replay buffer memory                                            | Buffers live in CPU RAM (`storage_device: cpu`), about 20 GB per 100k transitions. Reduce `online_buffer_capacity` / `offline_buffer_capacity` if needed.                                                                  |
+| Reward classifier unreliable                                    | Make sure success is clearly visible in the `side` view, record more varied success and failure examples, and check the crop doesn't cut the object out.                                                                   |
+| D405 image dark                                                 | The D405's colour image is darker than the D435i's. Add light to the scene, or set `exposure` / `gain` on the `side` camera config (try values in `realsense-viewer` first). Use the same settings for demos and training. |
+| `Failed to open RealSenseCamera(...)`                           | Another program (`realsense-viewer`, a still-running script) has the camera open. Close it. Also check the serial and that it is on USB 3.                                                                                 |
+| SpaceMouse not found                                            | Check the udev rule above and that `ls -l /dev/hidraw*` is readable.                                                                                                                                                       |
+| Keyboard keys ignored                                           | `pynput` needs an X11 session (not Wayland or SSH without a display).                                                                                                                                                      |
+| `pyrealsense2` fails to install                                 | Use Python 3.12 or 3.13.                                                                                                                                                                                                   |
+| `src/lerobot/teleoperators/space_mouse/xarm_spacemouse_test.py` | An earlier stand-alone test script, not used here. Move it out of `src/` before opening a PR.                                                                                                                              |
