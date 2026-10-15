@@ -88,9 +88,9 @@
       },
       "observation.state": {
         "min": [
-          0.2333,
-          -0.264,
-          -0.2995,
+          0.2501,
+          -0.2546,
+          -0.2982,
           0.0,
           -0.1,
           -0.1,
@@ -99,8 +99,8 @@
         ],
         "max": [
           0.5815,
-          0.2131,
-          0.2145,
+          0.2307,
+          0.0793,
           1.0,
           0.1,
           0.1,
@@ -194,18 +194,8 @@
       },
       "image_preprocessing": {
         "crop_params_dict": {
-          "observation.images.wrist": [
-            0,
-            0,
-            480,
-            640
-          ],
-          "observation.images.side": [
-            0,
-            0,
-            480,
-            640
-          ]
+          "observation.images.wrist": [88, 112, 390, 525],
+          "observation.images.side": [157, 19, 302, 582]
         },
         "resize_size": [
           128,
@@ -217,7 +207,15 @@
         "gripper_penalty": -0.02
       },
       "reset": {
-        "fixed_reset_joint_positions": [0.1, 7.9, 0, 14, 0, 6.1, 0],
+        "fixed_reset_joint_positions": [
+          -19.64,
+          8.71,
+          -10.21,
+          25.59,
+          5.05,
+          17.09,
+          -34.65
+        ],
         "reset_time_s": 5.0,
         "control_time_s": 90.0,
         "terminate_on_success": true
@@ -227,14 +225,14 @@
         "target_frame_name": null,
         "end_effector_bounds": {
           "min": [
-            0.2333,
-            -0.264,
-            -0.2995
+            0.2501,
+            -0.2546,
+            -0.2982
           ],
           "max": [
             0.5815,
-            0.2131,
-            0.2145
+            0.2307,
+            0.0793
           ]
         },
         "end_effector_step_sizes": {

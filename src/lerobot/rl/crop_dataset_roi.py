@@ -228,15 +228,17 @@ def convert_lerobot_dataset_to_cropped_lerobot_dataset(
             new_frame[key] = value
 
         new_frame["task"] = task
-        new_dataset.add_frame(new_frame)
 
+        # Save the previous episode before adding the first frame of a new one
         if frame["episode_index"].item() != prev_episode_index:
-            # Save the episode
             new_dataset.save_episode()
             prev_episode_index = frame["episode_index"].item()
 
-    # Save the last episode
+        new_dataset.add_frame(new_frame)
+
+    # Save the last episode and flush buffered episode metadata to disk
     new_dataset.save_episode()
+    new_dataset.finalize()
 
     if push_to_hub:
         new_dataset.push_to_hub()
