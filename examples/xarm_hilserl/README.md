@@ -77,7 +77,11 @@ Code involved:
 
    `xarm-python-sdk` is not part of the base `lerobot` install.
 
-2. **Device permissions.**
+2. **System libraries and device permissions.**
+   - SpaceMouse: `pyspacemouse` loads the system `hidapi` library, which `uv` does not install. Without it, `teleop.connect()` fails with `HID API is probably not installed`:
+     ```bash
+     sudo apt install libhidapi-hidraw0
+     ```
    - RealSense: install Intel's [udev rules](https://github.com/IntelRealSense/librealsense/blob/master/config/99-realsense-libusb.rules).
    - SpaceMouse: if `pyspacemouse` cannot open the device, allow access to 3Dconnexion HID devices:
      ```bash
@@ -111,7 +115,7 @@ Code involved:
 | `teleoperate.py`                          | —                                                          | Clear a fault and move home (when asked)              | —                    | —                 | Quit and print the config values |
 | Dry run (`env.json`)                      | Toggle intervention                                        | End episode: success                                  | End episode: failure | End episode: redo | Quit                             |
 | Demo recording (`env.json --mode=record`) | Toggle intervention (press after each reset to drive)      | End + save: success                                   | End + save: failure  | Discard + redo    | Quit                             |
-| Classifier recording (see step 5)         | Toggle intervention                                        | **Hold** in the success state: frames labeled success | End + save           | Discard + redo    | Quit                             |
+| Classifier recording (see step 5)         | Toggle intervention                                        | Press at success: every later frame labeled success   | End + save           | Discard + redo    | Quit                             |
 | Online training (actor)                   | Toggle intervention: SpaceMouse takes over from the policy | End episode: success                                  | End episode: failure | End episode       | Quit actor / learner             |
 | Evaluation (`eval_policy.py`)             | Safety takeover                                            | End episode: success                                  | End episode: failure | End episode       | Quit, print results              |
 
@@ -260,7 +264,7 @@ uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/
 For each episode (`terminate_on_success=false`, so episodes don't end on success):
 
 1. Press **Space** and do the task.
-2. Once it's done, **hold Enter** for a couple of seconds. Every frame with the key down is labeled success.
+2. Once it's done, press **Enter** once. From then on every frame of the episode is labeled success, so keep the scene in the success state for a few seconds.
 3. End the episode with **Backspace**, or let it time out.
 
 Vary the scene: also record near-misses and failures. Then train:

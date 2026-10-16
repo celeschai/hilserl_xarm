@@ -1,0 +1,16 @@
+Restore on the new desktop (Linux, user home assumed /home/<you>):
+
+1. Repo (full git history, uncommitted changes, outputs/ checkpoints):
+     tar -xzf hilserl_xarm.tar.gz -C ~
+     cd ~/hilserl_xarm && uv sync --locked --extra all   # rebuilds .venv (not copied)
+     git status   # should show the same modified/untracked files
+
+2. Claude Code conversations + memory. The folder name must match the repo's absolute path
+   with '/' replaced by '-'. If the repo is at /home/celes/hilserl_xarm:
+     mkdir -p ~/.claude/projects && tar -xzf claude_project.tar.gz -C ~/.claude/projects
+   If the path differs (e.g. /home/bob/hilserl_xarm), rename after extracting:
+     mv ~/.claude/projects/-home-celes-hilserl-xarm ~/.claude/projects/-home-bob-hilserl-xarm
+   Then `claude --resume` inside the repo lists the old sessions.
+
+3. Robot / teleop calibration:
+     mkdir -p ~/.cache/huggingface/lerobot && tar -xzf lerobot_calibration.tar.gz -C ~/.cache/huggingface/lerobot

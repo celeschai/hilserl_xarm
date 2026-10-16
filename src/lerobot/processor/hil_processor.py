@@ -601,15 +601,25 @@ class RewardClassifierProcessorStep(ProcessorStep):
     terminate_on_success: bool = True
 
     reward_classifier: Any = None
+    reward_preprocessor: Any = None
 
     def __post_init__(self):
         """Initializes the reward classifier model after the dataclass is created."""
         if self.pretrained_path is not None:
             from lerobot.rewards.classifier.modeling_classifier import Classifier
 
+            from .pipeline import DataProcessorPipeline
+
             self.reward_classifier = Classifier.from_pretrained(self.pretrained_path)
             self.reward_classifier.to(self.device)
             self.reward_classifier.eval()
+
+            # Same normalization + device placement the classifier was trained with
+            self.reward_preprocessor = DataProcessorPipeline.from_pretrained(
+                self.pretrained_path,
+                config_filename="classifier_preprocessor.json",
+                overrides={"device_processor": {"device": self.device}},
+            )
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         """
@@ -632,6 +642,8 @@ class RewardClassifierProcessorStep(ProcessorStep):
 
         if not images:
             return new_transition
+
+        images = self.reward_preprocessor(images)
 
         # Run reward classifier
         start_time = time.perf_counter()

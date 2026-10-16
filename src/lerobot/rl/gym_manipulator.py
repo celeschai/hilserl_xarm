@@ -745,6 +745,8 @@ def control_loop(
     episode_idx = 0
     episode_step = 0
     episode_start_time = time.perf_counter()
+    # Once success is signalled, every later frame of the episode is recorded as a success
+    success_latched = False
 
     try:
         while episode_idx < cfg.dataset.num_episodes_to_record:
@@ -772,13 +774,17 @@ def control_loop(
             truncated = transition.get(TransitionKey.TRUNCATED, False)
 
             if cfg.mode == "record":
+                success_latched = success_latched or bool(
+                    transition[TransitionKey.INFO].get(TeleopEvents.SUCCESS, False)
+                )
+                reward = 1.0 if success_latched else transition[TransitionKey.REWARD]
                 action_to_record = transition[TransitionKey.COMPLEMENTARY_DATA].get(
                     "teleop_action", transition[TransitionKey.ACTION]
                 )
                 frame = {
                     **observation,
                     ACTION: action_to_record.cpu(),
-                    REWARD: np.array([transition[TransitionKey.REWARD]], dtype=np.float32),
+                    REWARD: np.array([reward], dtype=np.float32),
                     DONE: np.array([terminated or truncated], dtype=bool),
                 }
                 if use_gripper:
@@ -803,6 +809,7 @@ def control_loop(
                 )
                 episode_step = 0
                 episode_idx += 1
+                success_latched = False
 
                 if dataset is not None:
                     if transition[TransitionKey.INFO].get(TeleopEvents.RERECORD_EPISODE, False):
@@ -822,10 +829,12 @@ def control_loop(
         if dataset is not None and dataset.writer is not None and dataset.writer.image_writer is not None:
             logging.info("Waiting for image writer to finish...")
             dataset.writer.image_writer.stop()
+        # Always flush buffered episode metadata, otherwise episodes past the last multiple of 10 are lost
+        if dataset is not None:
+            logging.info("Finalizing dataset")
+            dataset.finalize()
 
     if dataset is not None and cfg.dataset.push_to_hub:
-        logging.info("Finalizing dataset before pushing to hub")
-        dataset.finalize()
         logging.info("Pushing dataset to hub")
         dataset.push_to_hub()
 
