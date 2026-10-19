@@ -661,7 +661,7 @@ class ReplayBuffer:
             # ----- 1) Current state -----
             current_state: dict[str, torch.Tensor] = {}
             for key in state_keys:
-                val = current_sample[key]
+                val = _uint8_to_float(current_sample[key])
                 current_state[key] = val.unsqueeze(0)  # Add batch dimension
 
             # ----- 2) Action -----
@@ -696,7 +696,7 @@ class ReplayBuffer:
                     # Build next_state from the same keys
                     next_state_data: dict[str, torch.Tensor] = {}
                     for key in state_keys:
-                        val = next_sample[key]
+                        val = _uint8_to_float(next_sample[key])
                         next_state_data[key] = val.unsqueeze(0)  # Add batch dimension
                     next_state = next_state_data
 
@@ -729,6 +729,14 @@ class ReplayBuffer:
             transitions.append(transition)
 
         return transitions
+
+
+def _uint8_to_float(t: torch.Tensor) -> torch.Tensor:
+    """Rescale uint8 frames (e.g. from `make_dataset`, which sets `return_uint8=True`) to float32 in [0, 1]
+    so offline transitions match the online ones produced by the env processor."""
+    if isinstance(t, torch.Tensor) and t.dtype == torch.uint8:
+        return t.to(torch.float32) / 255.0
+    return t
 
 
 # Utility function to guess shapes/dtypes from a tensor

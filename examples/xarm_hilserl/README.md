@@ -65,7 +65,7 @@ Code involved:
 1. **Python 3.12 environment.** `pyrealsense2` only ships Linux wheels for Python 3.12 / 3.13.
 
    ```bash
-   uv sync --python 3.12 --locked --extra xarm_hilserl
+   uv sync --locked --extra xarm_hilserl --extra training --extra test
    ```
 
    The `xarm_hilserl` extra installs:

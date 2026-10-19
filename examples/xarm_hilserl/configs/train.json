@@ -194,18 +194,8 @@
       },
       "image_preprocessing": {
         "crop_params_dict": {
-          "observation.images.wrist": [
-            251,
-            248,
-            227,
-            390
-          ],
-          "observation.images.side": [
-            136,
-            119,
-            319,
-            401
-          ]
+          "observation.images.wrist": [1, 78, 493, 558],
+          "observation.images.side": [135, 142, 317, 370]
         },
         "resize_size": [
           128,

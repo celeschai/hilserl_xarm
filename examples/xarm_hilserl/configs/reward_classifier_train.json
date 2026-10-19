@@ -1,6 +1,6 @@
 {
   "dataset": {
-    "repo_id": "local/xarm7_hilserl_classifier_cropped_resized_relabeled",
+    "repo_id": "local/xarm7_hilserl_classifier_merged",
     "root": null
   },
   "reward_model": {
