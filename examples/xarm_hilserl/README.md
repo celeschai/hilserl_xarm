@@ -113,13 +113,13 @@ Code involved:
 | Process                                   | Space                                                      | Enter                                                 | Backspace            | `r`               | Ctrl+C                           |
 | ----------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------- | -------------------- | ----------------- | -------------------------------- |
 | `teleoperate.py`                          | —                                                          | Clear a fault and move home (when asked)              | —                    | —                 | Quit and print the config values |
-| Dry run (`env.json`)                      | Toggle intervention                                        | End episode: success                                  | End episode: failure | End episode: redo | Quit                             |
-| Demo recording (`env.json --mode=record`) | Toggle intervention (press after each reset to drive)      | End + save: success                                   | End + save: failure  | Discard + redo    | Quit                             |
-| Classifier recording (see step 5)         | Toggle intervention                                        | Press at success: every later frame labeled success   | End + save           | Discard + redo    | Quit                             |
-| Online training (actor)                   | Toggle intervention: SpaceMouse takes over from the policy | End episode: success                                  | End episode: failure | End episode       | Quit actor / learner             |
-| Evaluation (`eval_policy.py`)             | Safety takeover                                            | End episode: success                                  | End episode: failure | End episode       | Quit, print results              |
+| Dry run (`env.json`)                      | Latch intervention on / off                                | End episode: success                                  | End episode: failure | End episode: redo | Quit                             |
+| Demo recording (`env.json --mode=record`) | Latch intervention on / off                                | End + save: success                                   | End + save: failure  | Discard + redo    | Quit                             |
+| Classifier recording (see step 5)         | Latch intervention on / off                                | Press at success: every later frame labeled success   | End + save           | Discard + redo    | Quit                             |
+| Online training (actor)                   | Latch intervention on / off                                | End episode: success                                  | End episode: failure | End episode       | Quit actor / learner             |
+| Evaluation (`eval_policy.py`)             | Latch a safety takeover on / off                           | End episode: success                                  | End episode: failure | End episode       | Quit, print results              |
 
-Intervention switches back **off** at the end of every episode.
+**Intervention**, as in rail-berkeley/hil-serl: you intervene on every step where you move the puck (beyond `teleop.deadzone`) or hold a gripper button; on the other steps the policy acts (or, without a policy, the robot holds still). Only the steps with input are labeled as interventions, so letting go of the SpaceMouse hands control back right away and pauses are not recorded as expert "hold still" actions. Press **Space** to latch the intervention on, e.g. to make the arm hold still against the policy; it switches back **off** at the end of every episode. Set `teleop.intervene_on_input=false` for the toggle-only behavior.
 
 ## Step by step
 
@@ -194,7 +194,7 @@ This runs exactly the loop used for recording and training, with no policy:
 
 - each episode starts with a reset to `fixed_reset_joint_positions`;
 - you rearrange the scene before `reset_time_s` (5 s, counted from the start of the reset, homing included) runs out;
-- the robot holds still until you press **Space**, after which the SpaceMouse drives it;
+- the robot holds still until you move the SpaceMouse, which then drives it;
 - **Enter / Backspace** end the episode;
 - after `control_time_s` (20 s) the episode times out.
 
@@ -208,9 +208,8 @@ uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/
 For each episode:
 
 1. Wait for the reset.
-2. Press **Space** right away, so few idle frames are recorded.
-3. Do the task with the SpaceMouse.
-4. Press **Enter** when it's done.
+2. Do the task with the SpaceMouse, starting right away so few idle frames are recorded.
+3. Press **Enter** when it's done.
 
 Press **`r`** to discard an attempt that went wrong: like rail-berkeley/hil-serl, keep only successful demos (about 20, `num_episodes_to_record`).
 
@@ -263,7 +262,7 @@ uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/
 
 For each episode (`terminate_on_success=false`, so episodes don't end on success):
 
-1. Press **Space** and do the task.
+1. Do the task with the SpaceMouse.
 2. Once it's done, press **Enter** once. From then on every frame of the episode is labeled success, so keep the scene in the success state for a few seconds.
 3. End the episode with **Backspace**, or let it time out.
 

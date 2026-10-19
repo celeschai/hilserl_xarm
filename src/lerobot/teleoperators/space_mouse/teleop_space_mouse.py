@@ -58,8 +58,11 @@ class SpaceMouseTeleop(Teleoperator):
         - Left button (held): close gripper
         - Right button (held): open gripper
 
+    Intervention is active while the SpaceMouse is in use (puck moved or button held, see
+    `intervene_on_input`), or while latched on with Space.
+
     Keyboard:
-        - Space: toggle intervention
+        - Space: toggle the latched intervention
         - Enter: end episode with SUCCESS
         - Backspace: end episode with FAILURE
         - r: re-record episode
@@ -89,6 +92,8 @@ class SpaceMouseTeleop(Teleoperator):
         self._events_lock = threading.Lock()
         self._is_intervention = False
         self._episode_end_status: TeleopEvents | None = None
+        # Whether the action last returned by `get_action` had input, so the intervention flag matches it.
+        self._last_action_has_input = False
 
     @property
     def action_features(self) -> dict:
@@ -149,7 +154,7 @@ class SpaceMouseTeleop(Teleoperator):
             with self._events_lock:
                 if key == keyboard.Key.space:
                     self._is_intervention = not self._is_intervention
-                    logger.info(f"Intervention {'ON' if self._is_intervention else 'OFF'}")
+                    logger.info(f"Latched intervention {'ON' if self._is_intervention else 'OFF'}")
                 elif key == keyboard.Key.enter:
                     self._episode_end_status = TeleopEvents.SUCCESS
                 elif key == keyboard.Key.backspace:
@@ -162,7 +167,10 @@ class SpaceMouseTeleop(Teleoperator):
 
         print("SpaceMouse teleop controls:")
         print("  Puck: move end effector | Left/Right button: close/open gripper")
-        print("  Space: toggle intervention")
+        if self.config.intervene_on_input:
+            print("  Moving the puck or holding a button intervenes | Space: latch intervention on/off")
+        else:
+            print("  Space: toggle intervention")
         print("  Enter: end episode with SUCCESS | Backspace: end episode with FAILURE | r: re-record")
 
     def _get_deltas(self) -> np.ndarray:
@@ -172,9 +180,12 @@ class SpaceMouseTeleop(Teleoperator):
         deltas[np.abs(deltas) < self.config.deadzone] = 0.0
         return np.clip(deltas * self.config.scale, -1.0, 1.0).astype(np.float32)
 
-    def _get_gripper_action(self) -> int:
+    def _get_buttons(self) -> list[int]:
         with self._state_lock:
-            buttons = list(self._buttons)
+            return list(self._buttons)
+
+    @staticmethod
+    def _gripper_action_from_buttons(buttons: list[int]) -> int:
         close = len(buttons) > 0 and bool(buttons[0])
         open_ = len(buttons) > 1 and bool(buttons[1])
         if close == open_:
@@ -184,19 +195,26 @@ class SpaceMouseTeleop(Teleoperator):
     @check_if_not_connected
     def get_action(self) -> RobotAction:
         deltas = self._get_deltas()
+        buttons = self._get_buttons()
         action_dict: RobotAction = {
             "delta_x": deltas[0],
             "delta_y": deltas[1],
             "delta_z": deltas[2],
         }
         if self.config.use_gripper:
-            action_dict["gripper"] = self._get_gripper_action()
+            action_dict["gripper"] = self._gripper_action_from_buttons(buttons)
+        self._last_action_has_input = bool(np.any(deltas != 0.0)) or (
+            self.config.use_gripper and any(buttons)
+        )
         return action_dict
 
     def get_teleop_events(self) -> dict[TeleopEvents, bool]:
         """
         Get extra control events from the keyboard such as intervention status,
         episode termination, success indicators, etc.
+
+        With `intervene_on_input`, the human intervenes on the steps where the action last returned by
+        `get_action` has input, so call `get_action` first, as the HIL processor pipeline does.
 
         Returns:
             Dictionary containing:
@@ -206,7 +224,9 @@ class SpaceMouseTeleop(Teleoperator):
                 - rerecord_episode: bool - Whether to rerecord the episode
         """
         with self._events_lock:
-            is_intervention = self._is_intervention
+            is_intervention = self._is_intervention or (
+                self.config.intervene_on_input and self._last_action_has_input
+            )
             episode_end_status = self._episode_end_status
             self._episode_end_status = None
             # Hand control back to the policy at the start of the next episode.

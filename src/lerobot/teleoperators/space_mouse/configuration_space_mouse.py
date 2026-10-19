@@ -34,6 +34,9 @@ class SpaceMouseTeleopConfig(TeleoperatorConfig):
     axis_mapping: list[str] = field(default_factory=lambda: ["x", "y", "z"])
     # Index of the device to open when several SpaceMice are connected.
     device_index: int = 0
+    # Intervene on every step with SpaceMouse input (puck outside the deadzone or a button held), as in
+    # rail-berkeley/hil-serl. Space still latches the intervention on, e.g. to make the arm hold still.
+    intervene_on_input: bool = True
 
     def __post_init__(self):
         if len(self.axis_mapping) != 3:
