@@ -129,11 +129,11 @@ def test_env_step_sends_action_by_feature_order(env, robot):
     assert "robot_fault" not in info
 
 
-def test_robot_fault_truncates_episode(env, robot):
+def test_robot_fault_fails_episode(env, robot):
     env.reset()
     robot.has_fault = True
     _, _, terminated, truncated, info = env.step(torch.tensor([0.3, 0.0, 0.2, 0.0]))
-    assert truncated and not terminated
+    assert terminated and not truncated
     assert info["robot_fault"] is True
 
 

@@ -138,7 +138,7 @@ The robot / workspace values live in both `env.json` and `train.json` (one confi
 ```bash
 uv run python examples/xarm_hilserl/teleoperate.py \
     --robot.cameras='{wrist: {type: intelrealsense, serial_number_or_name: "134322070906", width: 640, height: 480, fps: 30}}' \
-    --home_joints_deg='[0.1, 7.9, 0, 14, 0, 6.1, 0]' \
+    --home_joints_deg='[62, -19.8, 42, 40.1, 18.5, 54.2, 1.6]' \
     --write_configs=true
 ```
 

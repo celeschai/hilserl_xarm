@@ -180,6 +180,21 @@ def test_reset_to_home(make_robot, arm):
     arm.set_gripper_position.assert_called_once_with(800, wait=True)
 
 
+def test_reset_to_home_retries_after_collision(robot, arm):
+    arm.set_servo_angle.side_effect = [1, 0]
+    with patch(f"{_MODULE}.time.sleep"):
+        robot.reset_to_home(HOME_JOINTS)
+    assert arm.set_servo_angle.call_count == 2
+    assert arm.mode == 7
+
+
+def test_reset_to_home_raises_when_recovery_fails(robot, arm):
+    arm.set_servo_angle.return_value = 1
+    with patch(f"{_MODULE}.time.sleep"), pytest.raises(RuntimeError, match="set_servo_angle"):
+        robot.reset_to_home(HOME_JOINTS)
+    assert arm.set_servo_angle.call_count == 3
+
+
 def test_reset_to_home_without_joints_stays_in_place(robot, arm):
     robot.reset_to_home(None)
     arm.set_servo_angle.assert_not_called()

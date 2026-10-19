@@ -286,13 +286,13 @@ class RobotEnv(gym.Env):
         truncated = False
         info: dict[Any, Any] = {TeleopEvents.IS_INTERVENTION: False}
 
-        # A controller fault (e.g. a collision) stops the robot: end the episode as truncated, not failed.
-        # The next `reset()` recovers the robot.
+        # A controller fault (e.g. a collision) stops the robot: end the episode as a failure (terminated,
+        # reward 0). The next `reset()` recovers the robot.
         if getattr(self.robot, "has_fault", False):
             logging.warning(
-                f"Robot fault, ending the episode: {getattr(self.robot, 'fault_description', '')}"
+                f"Robot fault, ending the episode as failed: {getattr(self.robot, 'fault_description', '')}"
             )
-            truncated = True
+            terminated = True
             info["robot_fault"] = True
 
         return (
@@ -817,7 +817,10 @@ def control_loop(
                         dataset.clear_episode_buffer()
                         episode_idx -= 1
                     else:
-                        logging.info(f"Saving episode {episode_idx}")
+                        fault = " (robot fault)" if transition[TransitionKey.INFO].get("robot_fault") else ""
+                        logging.info(
+                            f"Saving episode {episode_idx} as dataset episode_index {dataset.num_episodes}{fault}"
+                        )
                         dataset.save_episode()
 
                 # Reset for new episode

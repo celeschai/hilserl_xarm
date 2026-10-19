@@ -51,6 +51,8 @@ READY_STATE = 0
 
 MM_PER_M = 1000.0
 _MODE_SWITCH_TIMEOUT_S = 2.0
+_RECOVERY_ATTEMPTS = 3
+_RECOVERY_WAIT_S = 1.0
 
 
 class XArm(Robot):
@@ -168,17 +170,27 @@ class XArm(Robot):
         Args:
             joints_deg: Home joint angles in degrees. If `None`, the arm stays where it is.
         """
-        self._enable_motion()
-        self._set_mode(POSITION_MODE)
-
-        if joints_deg is not None:
+        # Right after a collision the controller can raise the error again on the first move, so retry.
+        for attempt in range(1, _RECOVERY_ATTEMPTS + 1):
+            self._enable_motion()
+            self._set_mode(POSITION_MODE)
+            if joints_deg is None:
+                break
             code = self._api.set_servo_angle(
                 angle=list(joints_deg),
                 speed=self.config.home_joint_speed_deg_s,
                 is_radian=False,
                 wait=True,
             )
-            self._check(code, "set_servo_angle")
+            if code == 0 and not self.has_fault:
+                break
+            if attempt == _RECOVERY_ATTEMPTS:
+                self._check(code or -1, "set_servo_angle")
+            logger.warning(
+                f"{self} homing failed (code {code}, attempt {attempt}/{_RECOVERY_ATTEMPTS}), retrying. "
+                f"{self.fault_description}"
+            )
+            time.sleep(_RECOVERY_WAIT_S)
 
         if self.config.random_xy_range_m > 0:
             dx, dy = self._rng.uniform(-self.config.random_xy_range_m, self.config.random_xy_range_m, size=2)
@@ -291,6 +303,10 @@ class XArm(Robot):
     def _enable_motion(self) -> None:
         self._api.clean_error()
         self._api.clean_warn()
+        # The error is cleared asynchronously by the controller.
+        deadline = time.perf_counter() + _MODE_SWITCH_TIMEOUT_S
+        while self.has_fault and time.perf_counter() < deadline:
+            time.sleep(0.05)
         self._check(self._api.motion_enable(enable=True), "motion_enable")
 
     def _set_mode(self, mode: int) -> None:
