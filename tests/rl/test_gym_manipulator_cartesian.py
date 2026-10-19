@@ -16,7 +16,6 @@
 
 """`gym_manipulator` with a robot that has no motor bus and takes Cartesian targets (e.g. the xArm)."""
 
-import itertools
 import time
 from unittest.mock import patch
 
@@ -140,7 +139,7 @@ def test_robot_fault_fails_episode(env, robot):
 
 
 def test_step_observes_after_control_period(robot):
-    """The observation is taken a control period after the previous one, not right after `send_action`."""
+    """The observation is taken a control period after the action is sent, not right after `send_action`."""
     period = 0.05
     env = RobotEnv(robot=robot, use_gripper=True, reset_time_s=0.0, control_period_s=period)
     events = []
@@ -150,11 +149,11 @@ def test_step_observes_after_control_period(robot):
 
     env.reset()
     for _ in range(3):
+        events.clear()
         env.step(torch.tensor([0.3, 0.0, 0.2, 0.0]))
-
-    obs_times = [t for kind, t in events if kind == "obs"]
-    assert [kind for kind, _ in events][-2:] == ["send", "obs"]
-    assert all(b - a >= period - 1e-3 for a, b in itertools.pairwise(obs_times))
+        (send, send_time), (obs, obs_time) = events
+        assert (send, obs) == ("send", "obs")
+        assert obs_time - send_time >= period - 1e-3
 
 
 def test_motor_bus_robot_unchanged():
