@@ -133,6 +133,7 @@ class RobotEnv(gym.Env):
         display_cameras: bool = False,
         reset_pose: list[float] | None = None,
         reset_time_s: float = 5.0,
+        control_period_s: float | None = None,
     ) -> None:
         """Initialize robot environment with configuration options.
 
@@ -142,6 +143,9 @@ class RobotEnv(gym.Env):
             display_cameras: Whether to show camera feeds during execution.
             reset_pose: Joint positions for environment reset.
             reset_time_s: Time to wait during reset.
+            control_period_s: If set, `step` waits after sending the action until this long has passed since
+                the previous observation before observing, as in rail-berkeley/hil-serl. The next observation
+                then shows the effect of the action instead of the motion caused by the previous one.
         """
         super().__init__()
 
@@ -168,6 +172,8 @@ class RobotEnv(gym.Env):
 
         self.reset_pose = reset_pose
         self.reset_time_s = reset_time_s
+        self.control_period_s = control_period_s
+        self._last_obs_time: float | None = None
 
         self.use_gripper = use_gripper
 
@@ -263,6 +269,7 @@ class RobotEnv(gym.Env):
         self.current_step = 0
         self.episode_data = None
         obs = self._get_observation()
+        self._last_obs_time = time.perf_counter()
         self._raw_joint_positions = {key: obs[key] for key in self._state_keys}
         return obs, {TeleopEvents.IS_INTERVENTION: False}
 
@@ -272,7 +279,12 @@ class RobotEnv(gym.Env):
 
         self.robot.send_action(joint_targets_dict)
 
+        # Let the robot move for the rest of the control period before observing the result.
+        if self.control_period_s is not None and self._last_obs_time is not None:
+            precise_sleep(max(self.control_period_s - (time.perf_counter() - self._last_obs_time), 0.0))
+
         obs = self._get_observation()
+        self._last_obs_time = time.perf_counter()
 
         self._raw_joint_positions = {key: obs[key] for key in self._state_keys}
 
@@ -376,6 +388,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
         display_cameras=display_cameras,
         reset_pose=reset_pose,
         reset_time_s=reset_time_s,
+        control_period_s=1.0 / cfg.fps if cfg.fps else None,
     )
 
     return env, teleop_device
