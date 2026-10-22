@@ -15,7 +15,7 @@
     "disable_artifact": true
   },
   "dataset": {
-    "repo_id": "local/xarm7_hilserl_demos_cropped_resized",
+    "repo_id": "local/xarm7_hilserl_demos_6dof_ft_cropped_resized",
     "use_imagenet_stats": false
   },
   "algorithm": {
@@ -49,7 +49,7 @@
       "observation.state": {
         "type": "STATE",
         "shape": [
-          8
+          19
         ]
       }
     },
@@ -57,7 +57,7 @@
       "action": {
         "type": "ACTION",
         "shape": [
-          3
+          6
         ]
       }
     },
@@ -88,33 +88,61 @@
       },
       "observation.state": {
         "min": [
-          -0.3409,
-          0.2151,
-          0.0657,
-          0.0,
+          -0.1376,
+          -0.3046,
+          -0.1111,
+          -0.3184,
+          -0.4057,
+          -0.5012,
           -0.1,
           -0.1,
           -0.1,
-          -10.0
+          -0.6,
+          -0.6,
+          -0.6,
+          -30.0,
+          -30.0,
+          -30.0,
+          -3.0,
+          -3.0,
+          -3.0,
+          0.0
         ],
         "max": [
-          0.0058,
-          0.5081,
-          0.247,
-          1.0,
+          0.179,
+          0.0611,
+          0.1174,
+          0.3848,
+          0.4086,
+          0.4596,
           0.1,
           0.1,
           0.1,
-          10.0
+          0.6,
+          0.6,
+          0.6,
+          30.0,
+          30.0,
+          30.0,
+          3.0,
+          3.0,
+          3.0,
+          1.0
         ]
       },
       "action": {
         "min": [
           -1.0,
           -1.0,
+          -1.0,
+          -1.0,
+          -1.0,
           -1.0
         ],
         "max": [
+          1.0,
+          1.0,
+          1.0,
           1.0,
           1.0,
           1.0
@@ -170,7 +198,36 @@
           "height": 480,
           "fps": 30
         }
-      }
+      },
+      "use_ft_sensor": true,
+      "ft_sensor_frame": "tool",
+      "use_admittance": true,
+      "admittance_stiffness": [
+        2000.0,
+        2000.0,
+        2000.0,
+        20.0,
+        20.0,
+        20.0
+      ],
+      "admittance_mass": [
+        0.06,
+        0.06,
+        0.06,
+        0.0006,
+        0.0006,
+        0.0006
+      ],
+      "admittance_axes": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "admittance_frame": 0,
+      "random_rz_range_rad": 0.0
     },
     "teleop": {
       "type": "spacemouse",
@@ -181,23 +238,28 @@
         "x",
         "y",
         "z"
-      ]
+      ],
+      "use_rotation": true,
+      "rotation_mapping": null,
+      "rotation_deadzone": 0.15,
+      "rotation_scale": 1.0
     },
     "processor": {
       "control_mode": "spacemouse",
       "max_gripper_pos": 1.0,
       "observation": {
         "display_cameras": false,
-        "add_joint_velocity_to_observation": true,
+        "add_joint_velocity_to_observation": false,
         "add_current_to_observation": false,
-        "add_ee_pose_to_observation": false
+        "add_ee_pose_to_observation": false,
+        "relative_ee_frame": true
       },
       "image_preprocessing": {
-        "crop_params_dict": {
-          "observation.images.wrist": [103, 261, 375, 379],
-          "observation.images.side": [135, 181, 299, 339]
-        },
-        "resize_size": [128, 128]
+        "crop_params_dict": null,
+        "resize_size": [
+          128,
+          128
+        ]
       },
       "gripper": {
         "use_gripper": true,
@@ -205,13 +267,13 @@
       },
       "reset": {
         "fixed_reset_joint_positions": [
-          65.29,
-          -21.95,
-          44.04,
-          36.9,
-          21.19,
-          52.5,
-          4.43
+          47.01,
+          -3.03,
+          61.1,
+          58.34,
+          -7.37,
+          52.69,
+          46.66
         ],
         "reset_time_s": 5.0,
         "control_time_s": 90.0,
@@ -222,14 +284,20 @@
         "target_frame_name": null,
         "end_effector_bounds": {
           "min": [
-            -0.3409,
-            0.2151,
-            0.0657
+            -0.4099,
+            0.2274,
+            0.226,
+            2.7342,
+            -0.4454,
+            1.1079
           ],
           "max": [
-            0.0058,
-            0.5081,
-            0.247
+            -0.0502,
+            0.5458,
+            0.4541,
+            3.1416,
+            0.3609,
+            2.0785
           ]
         },
         "end_effector_step_sizes": {
@@ -237,7 +305,28 @@
           "y": 0.01,
           "z": 0.01
         },
-        "delta_reference": "measured"
+        "delta_reference": "measured",
+        "use_rotation": true,
+        "end_effector_rot_step": 0.06,
+        "action_frame": "ee",
+        "reference_clip": {
+          "min": [
+            -0.01,
+            -0.01,
+            -0.01,
+            -0.05,
+            -0.05,
+            -0.05
+          ],
+          "max": [
+            0.01,
+            0.01,
+            0.01,
+            0.05,
+            0.05,
+            0.05
+          ]
+        }
       },
       "reward_classifier": {
         "pretrained_path": "outputs/train/xarm7_reward_classifier_v2/checkpoints/last/pretrained_model",
@@ -267,13 +356,13 @@
       "observation.state": {
         "type": "STATE",
         "shape": [
-          8
+          19
         ]
       },
       "action": {
         "type": "ACTION",
         "shape": [
-          3
+          6
         ]
       }
     },
