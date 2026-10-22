@@ -194,13 +194,10 @@
       },
       "image_preprocessing": {
         "crop_params_dict": {
-          "observation.images.wrist": [1, 78, 493, 558],
-          "observation.images.side": [135, 142, 317, 370]
+          "observation.images.wrist": [103, 261, 375, 379],
+          "observation.images.side": [135, 181, 299, 339]
         },
-        "resize_size": [
-          128,
-          128
-        ]
+        "resize_size": [128, 128]
       },
       "gripper": {
         "use_gripper": true,
@@ -243,7 +240,7 @@
         "delta_reference": "measured"
       },
       "reward_classifier": {
-        "pretrained_path": "outputs/train/xarm7_reward_classifier/checkpoints/last/pretrained_model",
+        "pretrained_path": "outputs/train/xarm7_reward_classifier_v2/checkpoints/last/pretrained_model",
         "success_threshold": 0.5,
         "success_reward": 1.0
       }

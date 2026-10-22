@@ -177,7 +177,23 @@ def test_reset_to_home(make_robot, arm):
     assert abs(kwargs["x"]) <= 20.0 and abs(kwargs["y"]) <= 20.0
     assert kwargs["z"] == 0
 
-    arm.set_gripper_position.assert_called_once_with(800, wait=True)
+    arm.set_gripper_position.assert_called_once_with(800, wait=True, wait_motion=False)
+
+
+def test_reset_to_home_retries_gripper_failure(robot, arm):
+    arm.set_gripper_position.side_effect = [-9, 0]
+    with patch(f"{_MODULE}.time.sleep"):
+        robot.reset_to_home(HOME_JOINTS)
+    assert arm.set_servo_angle.call_count == 2
+    assert arm.set_gripper_position.call_count == 2
+    assert arm.mode == 7
+
+
+def test_reset_to_home_raises_when_gripper_keeps_failing(robot, arm):
+    arm.set_gripper_position.return_value = -9
+    with patch(f"{_MODULE}.time.sleep"), pytest.raises(RuntimeError, match="set_gripper_position"):
+        robot.reset_to_home(HOME_JOINTS)
+    assert arm.set_gripper_position.call_count == 3
 
 
 def test_reset_to_home_retries_after_collision(robot, arm):

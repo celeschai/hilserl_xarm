@@ -172,25 +172,34 @@ class XArm(Robot):
         """
         # Right after a collision the controller can raise the error again on the first move, so retry.
         for attempt in range(1, _RECOVERY_ATTEMPTS + 1):
-            self._enable_motion()
-            self._set_mode(POSITION_MODE)
-            if joints_deg is None:
+            code, api = self._try_reset_to_home(joints_deg)
+            if code == 0 and not self.has_fault:
                 break
+            if attempt == _RECOVERY_ATTEMPTS:
+                self._check(code or -1, api)
+            logger.warning(
+                f"{self} homing failed (`{api}` code {code}, attempt {attempt}/{_RECOVERY_ATTEMPTS}), "
+                f"retrying. {self.fault_description}"
+            )
+            time.sleep(_RECOVERY_WAIT_S)
+
+        self._last_gripper_target = 0.0
+        self._hold_current_orientation()
+        self._set_mode(ONLINE_CARTESIAN_MODE)
+
+    def _try_reset_to_home(self, joints_deg: Sequence[float] | None) -> tuple[int, str]:
+        """One homing attempt. Returns the first non-zero SDK code (or 0) and the API that returned it."""
+        self._enable_motion()
+        self._set_mode(POSITION_MODE)
+        if joints_deg is not None:
             code = self._api.set_servo_angle(
                 angle=list(joints_deg),
                 speed=self.config.home_joint_speed_deg_s,
                 is_radian=False,
                 wait=True,
             )
-            if code == 0 and not self.has_fault:
-                break
-            if attempt == _RECOVERY_ATTEMPTS:
-                self._check(code or -1, "set_servo_angle")
-            logger.warning(
-                f"{self} homing failed (code {code}, attempt {attempt}/{_RECOVERY_ATTEMPTS}), retrying. "
-                f"{self.fault_description}"
-            )
-            time.sleep(_RECOVERY_WAIT_S)
+            if code != 0:
+                return code, "set_servo_angle"
 
         if self.config.random_xy_range_m > 0:
             dx, dy = self._rng.uniform(-self.config.random_xy_range_m, self.config.random_xy_range_m, size=2)
@@ -206,14 +215,13 @@ class XArm(Robot):
                 is_radian=False,
                 wait=True,
             )
-            self._check(code, "set_position")
+            if code != 0:
+                return code, "set_position"
 
-        self._check(
-            self._api.set_gripper_position(self.config.gripper_open_pos, wait=True), "set_gripper_position"
-        )
-        self._last_gripper_target = 0.0
-        self._hold_current_orientation()
-        self._set_mode(ONLINE_CARTESIAN_MODE)
+        # The moves above already waited for the arm. By default the SDK also waits for the arm before moving
+        # the gripper, and that wait returns -9 (`EMERGENCY_STOP`) on a controller left stopped by a fault.
+        code = self._api.set_gripper_position(self.config.gripper_open_pos, wait=True, wait_motion=False)
+        return code, "set_gripper_position"
 
     @check_if_not_connected
     def get_joint_positions(self) -> list[float]:

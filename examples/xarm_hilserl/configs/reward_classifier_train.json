@@ -1,6 +1,9 @@
 {
   "dataset": {
-    "repo_id": "local/xarm7_hilserl_classifier_merged",
+    "repo_id": "local/xarm7_hilserl_classifier_v2",
+    "image_transforms": {
+      "enable": true
+    },
     "root": null
   },
   "reward_model": {
@@ -45,5 +48,5 @@
     "enable": false,
     "project": "xarm7-reward-classifier"
   },
-  "job_name": "xarm7_reward_classifier"
+  "job_name": "xarm7_reward_classifier_v2"
 }

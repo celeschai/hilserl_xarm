@@ -702,6 +702,10 @@ def handle_resume_logic(cfg: TrainRLServerPipelineConfig) -> TrainRLServerPipeli
     checkpoint_cfg_path = os.path.join(checkpoint_dir, PRETRAINED_MODEL_DIR, "train_config.json")
     checkpoint_cfg = TrainRLServerPipelineConfig.from_pretrained(checkpoint_cfg_path)
 
+    # The actor and the discrete critic are saved with the policy, not with the algorithm state: load them
+    # from the checkpoint too, or `make_policy` would build them from scratch.
+    checkpoint_cfg.policy.pretrained_path = Path(checkpoint_dir) / PRETRAINED_MODEL_DIR
+
     # Ensure resume flag is set in returned config
     checkpoint_cfg.resume = True
     return checkpoint_cfg
@@ -804,7 +808,8 @@ def initialize_replay_buffer(
     Returns:
         ReplayBuffer: Initialized replay buffer
     """
-    if not cfg.resume:
+    buffers_dir = saved_buffers_dir(cfg)
+    if buffers_dir is None:
         return ReplayBuffer(
             capacity=cfg.policy.online_buffer_capacity,
             device=device,
@@ -813,8 +818,8 @@ def initialize_replay_buffer(
             optimize_memory=True,
         )
 
-    logging.info("Resume training load the online dataset")
-    dataset_path = os.path.join(cfg.output_dir, "dataset")
+    logging.info(f"Load the online replay buffer saved in {buffers_dir}")
+    dataset_path = os.path.join(buffers_dir, "dataset")
 
     # NOTE: In RL is possible to not have a dataset.
     repo_id = None
@@ -833,6 +838,13 @@ def initialize_replay_buffer(
     )
 
 
+def saved_buffers_dir(cfg: TrainRLServerPipelineConfig) -> str | None:
+    """Run directory to load the saved replay buffers from: this run's when resuming, else `buffers_path`."""
+    if cfg.resume:
+        return str(cfg.output_dir)
+    return cfg.buffers_path
+
+
 def initialize_offline_replay_buffer(
     cfg: TrainRLServerPipelineConfig,
     device: str,
@@ -849,12 +861,13 @@ def initialize_offline_replay_buffer(
     Returns:
         ReplayBuffer: Initialized offline replay buffer
     """
-    if not cfg.resume:
+    buffers_dir = saved_buffers_dir(cfg)
+    if buffers_dir is None:
         logging.info("make_dataset offline buffer")
         offline_dataset = make_dataset(cfg)
     else:
-        logging.info("load offline dataset")
-        dataset_offline_path = os.path.join(cfg.output_dir, "dataset_offline")
+        logging.info(f"Load the offline replay buffer saved in {buffers_dir}")
+        dataset_offline_path = os.path.join(buffers_dir, "dataset_offline")
         offline_dataset = LeRobotDataset(
             repo_id=cfg.dataset.repo_id,
             root=dataset_offline_path,

@@ -39,6 +39,10 @@ class TrainRLServerPipelineConfig(TrainPipelineConfig):
     mixer: str = "online_offline"
     # Fraction sampled from online replay when using OnlineOfflineMixer.
     online_ratio: float = 0.5
+    # Output directory of a previous run to start the replay buffers from (its `dataset/` and
+    # `dataset_offline/`, as saved with every checkpoint), e.g. after relabeling them. The networks start
+    # fresh, so they never train on the previous labels. Ignored when resuming.
+    buffers_path: str | None = None
 
     def validate(self) -> None:
         super().validate()
