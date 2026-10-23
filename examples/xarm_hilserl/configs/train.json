@@ -15,14 +15,14 @@
     "disable_artifact": true
   },
   "dataset": {
-    "repo_id": "local/xarm7_hilserl_demos_6dof_ft_cropped_resized",
+    "repo_id": "local/xarm7_hilserl_demos_6dof_ft",
     "use_imagenet_stats": false
   },
   "algorithm": {
     "type": "sac",
     "temperature_init": 0.01,
     "discount": 0.97,
-    "utd_ratio": 1
+    "utd_ratio": 2
   },
   "mixer": "online_offline",
   "online_ratio": 0.5,
@@ -39,6 +39,14 @@
         ]
       },
       "observation.images.side": {
+        "type": "VISUAL",
+        "shape": [
+          3,
+          128,
+          128
+        ]
+      },
+      "observation.images.front": {
         "type": "VISUAL",
         "shape": [
           3,
@@ -86,14 +94,26 @@
           0.225
         ]
       },
+      "observation.images.front": {
+        "mean": [
+          0.485,
+          0.456,
+          0.406
+        ],
+        "std": [
+          0.229,
+          0.224,
+          0.225
+        ]
+      },
       "observation.state": {
         "min": [
-          -0.1376,
-          -0.3046,
-          -0.1111,
-          -0.3184,
-          -0.4057,
-          -0.5012,
+          -0.2327,
+          -0.1521,
+          -0.1843,
+          -0.5395,
+          -0.4869,
+          -0.9219,
           -0.1,
           -0.1,
           -0.1,
@@ -109,12 +129,12 @@
           0.0
         ],
         "max": [
-          0.179,
-          0.0611,
-          0.1174,
-          0.3848,
-          0.4086,
-          0.4596,
+          0.2214,
+          0.1872,
+          0.0792,
+          0.5171,
+          0.4889,
+          0.0945,
           0.1,
           0.1,
           0.1,
@@ -176,7 +196,7 @@
       "type": "xarm",
       "id": "xarm7",
       "ip": "192.168.1.235",
-      "max_linear_speed_mm_s": 200.0,
+      "max_linear_speed_mm_s": 100.0,
       "max_linear_acc_mm_s2": 2000.0,
       "home_joint_speed_deg_s": 30.0,
       "gripper_open_pos": 800,
@@ -194,6 +214,13 @@
         "side": {
           "type": "intelrealsense",
           "serial_number_or_name": "261122273645",
+          "width": 640,
+          "height": 480,
+          "fps": 30
+        },
+        "front": {
+          "type": "intelrealsense",
+          "serial_number_or_name": "263522074909",
           "width": 640,
           "height": 480,
           "fps": 30
@@ -255,7 +282,26 @@
         "relative_ee_frame": true
       },
       "image_preprocessing": {
-        "crop_params_dict": null,
+        "crop_params_dict": {
+          "observation.images.wrist": [
+            1,
+            0,
+            477,
+            640
+          ],
+          "observation.images.side": [
+            144,
+            77,
+            313,
+            470
+          ],
+          "observation.images.front": [
+            67,
+            15,
+            413,
+            606
+          ]
+        },
         "resize_size": [
           128,
           128
@@ -267,13 +313,13 @@
       },
       "reset": {
         "fixed_reset_joint_positions": [
-          47.01,
-          -3.03,
-          61.1,
-          58.34,
-          -7.37,
-          52.69,
-          46.66
+          102.12,
+          -8.46,
+          12.85,
+          38.66,
+          2.26,
+          44.96,
+          46.88
         ],
         "reset_time_s": 5.0,
         "control_time_s": 90.0,
@@ -284,20 +330,20 @@
         "target_frame_name": null,
         "end_effector_bounds": {
           "min": [
-            -0.4099,
-            0.2274,
-            0.226,
-            2.7342,
-            -0.4454,
-            1.1079
+            -0.3139,
+            0.0814,
+            0.2143,
+            -3.1416,
+            -3.1416,
+            -3.1416
           ],
           "max": [
-            -0.0502,
-            0.5458,
-            0.4541,
+            -0.0215,
+            0.5536,
+            0.4667,
             3.1416,
-            0.3609,
-            2.0785
+            3.1416,
+            3.1416
           ]
         },
         "end_effector_step_sizes": {
@@ -329,7 +375,7 @@
         }
       },
       "reward_classifier": {
-        "pretrained_path": "outputs/train/xarm7_reward_classifier_v2/checkpoints/last/pretrained_model",
+        "pretrained_path": "outputs/train/xarm7_reward_classifier_v3/checkpoints/last/pretrained_model",
         "success_threshold": 0.5,
         "success_reward": 1.0
       }
@@ -353,6 +399,14 @@
           128
         ]
       },
+      "observation.images.front": {
+        "type": "VISUAL",
+        "shape": [
+          3,
+          128,
+          128
+        ]
+      },
       "observation.state": {
         "type": "STATE",
         "shape": [
@@ -369,6 +423,7 @@
     "features_map": {
       "observation.images.wrist": "observation.images.wrist",
       "observation.images.side": "observation.images.side",
+      "observation.images.front": "observation.images.front",
       "observation.state": "observation.state",
       "action": "action"
     }

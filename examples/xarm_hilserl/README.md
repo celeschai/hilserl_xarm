@@ -170,8 +170,9 @@ uv run python examples/xarm_hilserl/teleoperate.py \
     --home_joints_deg='[62, -19.8, 42, 40.1, 18.5, 54.2, 1.6]' \
     --teleop.use_rotation=true --robot.use_ft_sensor=true --robot.use_admittance=true \
     --end_effector_rot_step=0.06 \
-    --reference_clip='{min: [-0.01, -0.01, -0.01, -0.05, -0.05, -0.05], max: [0.01, 0.01, 0.01, 0.05, 0.05, 0.05]}'
-    --write_configs=true
+    --reference_clip='{min: [-0.01, -0.01, -0.01, -0.05, -0.05, -0.05], max: [0.01, 0.01, 0.01, 0.05, 0.05, 0.05]}' \
+    --write_configs=true \
+    --display_data=true 
 
 ```
 
@@ -181,18 +182,17 @@ To try contacts as they will behave in HIL-SERL, add `--robot.use_admittance=tru
 
 1. **Axis mapping.** Push the puck forward, left and up; the TCP should move +X, +Y, +Z. If not, fix `--teleop.axis_mapping` (e.g. `'[y, -x, z]'`), then set the same `env.teleop.axis_mapping` in `env.json` and `train.json`. Rotation follows the same mapping, so it needs no separate setup. Override it only if you want something else, with `--teleop.rotation_mapping` (`roll` / `pitch` / `yaw` = rotation about the puck x / y / z, e.g. `'[-pitch, roll, yaw]'`).
 2. **Step size.** `--end_effector_step_sizes` is the distance moved per step at full deflection (default 1 cm = 10 cm/s at 10 Hz), `--end_effector_rot_step` the rotation (0.06 rad, as hil-serl's `ram_insertion`). Pick values that are precise enough for the task. **Freeze them now**: demos store normalized actions, so changing the step size later changes what the demos mean.
-3. **Workspace and home.**
+3. **Workspace and home.** The pose the script starts from (`--home_joints_deg`, or where the arm is) becomes the home of every episode.
    - Move the TCP over the whole region the task needs: every corner, highest and lowest point.
-   - Finish at the pose every episode should start from.
-   - Press Ctrl+C.
+   - Press Ctrl+C, wherever the arm is.
 
 On exit the script prints the values it found:
 
-- `env.processor.inverse_kinematics`: `end_effector_bounds` (the visited box: xyz, then |roll|, pitch, yaw), step sizes, `delta_reference`;
-- `env.processor.reset.fixed_reset_joint_positions`: the current joints, the home pose of every episode;
-- `policy.dataset_stats` for the 19-D state: the visited pose relative to the start pose, the twist at full deflection, ±`--force_range_n` / `--torque_range_nm`, the gripper.
+- `env.processor.inverse_kinematics`: `end_effector_bounds` (xyz: the box you visited; |roll|, pitch, yaw: ±`--box_rad` around the start pose, the home of every episode), step sizes, `delta_reference`;
+- `env.processor.reset.fixed_reset_joint_positions`: the joints at the start, the home pose of every episode;
+- `policy.dataset_stats` for the 19-D state: the visited pose relative to the home, the twist at full deflection, ±`--force_range_n` / `--torque_range_nm`, the gripper.
 
-With `--write_configs=true` it then asks `Write these values into …env.json, …train.json? [y/N]`. Answer `y` only after a good run: a run that ended in an error or a bad final pose should not overwrite your configs. Without the flag, nothing is written.
+With `--write_configs=true` it then asks `Write these values into …env.json, …train.json? [y/N]`. Answer `y` only after a good run: a run that ended in an error or did not cover the workspace should not overwrite your configs. Without the flag, nothing is written.
 
 To edit the configs by hand instead, the printed values go here:
 
@@ -236,8 +236,7 @@ This runs exactly the loop used for recording and training, with no policy:
 ### 3. Record demonstrations
 
 ```bash
-uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/configs/env.json \
-    --mode=record --dataset.task="<what the robot should do>"
+uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/configs/env.json --mode=record
 ```
 
 For each episode:
@@ -292,7 +291,7 @@ The classifier detects success from the camera images (both cameras); it gives t
 ```bash
 uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/configs/env.json \
     --mode=record --dataset.repo_id=local/xarm7_hilserl_classifier --dataset.num_episodes_to_record=15 \
-    --env.processor.reset.terminate_on_success=false --dataset.task="<what the robot should do>"
+    --env.processor.reset.terminate_on_success=false
 ```
 
 For each episode (`terminate_on_success=false`, so episodes don't end on success):

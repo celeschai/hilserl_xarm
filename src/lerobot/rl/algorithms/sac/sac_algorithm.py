@@ -218,7 +218,7 @@ class SACAlgorithm(RLAlgorithm):
             self._update_target_networks()
 
         batch = next(batch_iterator)
-        fb = self._prepare_forward_batch(batch, include_complementary_info=False)
+        fb = self._prepare_forward_batch(batch, include_complementary_info=True)
 
         loss_critic = self._compute_loss_critic(fb)
         self.optimizers["critic"].zero_grad()

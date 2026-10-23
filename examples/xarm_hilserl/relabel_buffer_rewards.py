@@ -79,8 +79,7 @@ ONLINE_DIR = "dataset"
 OFFLINE_DIR = "dataset_offline"
 DECISIONS_FILE = "relabel_decisions.json"
 INTERVENTION_KEY = "complementary_info.is_intervention"
-SIDE_KEY = "observation.images.side"
-WRIST_KEY = "observation.images.wrist"
+CAMERA_KEYS = ("observation.images.side", "observation.images.front", "observation.images.wrist")
 TILE_SIZE = 384
 EXPORT_EPISODE_LENGTH = 50
 
@@ -196,9 +195,9 @@ def to_bgr(image) -> np.ndarray:
 
 
 def render(dataset: LeRobotDataset, episode: Episode, offset: int, header: str) -> np.ndarray:
-    """Side and wrist cameras side by side at frame `offset` of the episode."""
+    """The cameras side by side at frame `offset` of the episode."""
     frame = dataset[episode.start + offset]
-    canvas = np.hstack([to_bgr(frame[SIDE_KEY]), to_bgr(frame[WRIST_KEY])])
+    canvas = np.hstack([to_bgr(frame[key]) for key in CAMERA_KEYS if key in frame])
     label = f"frame {offset}/{len(episode) - 1}"
     if offset in episode.reward_offsets:
         label += " (classifier reward)"

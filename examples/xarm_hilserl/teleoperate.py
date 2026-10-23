@@ -19,10 +19,11 @@ Teleoperate an xArm with a SpaceMouse in end-effector space, and find the values
 
 The SpaceMouse deltas go through the same processor steps as in HIL-SERL (`MapDeltaActionToRobotActionStep` +
 `CartesianDeltaToTargetStep`), so the arm moves exactly as it will when recording demos and intervening.
-Jog the TCP around the region the task needs and finish at the pose every episode should start from. On Ctrl+C
-the script prints the config values it found: the visited `end_effector_bounds` (xyz, plus roll / pitch / yaw with
-`--teleop.use_rotation=true`), the current joints as `fixed_reset_joint_positions` and the matching
-`policy.dataset_stats` for the hil-serl state (`relative_ee_frame`): pose relative to the start pose, twist,
+The pose the script starts from (after `--home_joints_deg`, if set) is the home of every episode. Jog the TCP around
+the region the task needs; where you finish does not matter. On Ctrl+C the script prints the config values it found:
+`end_effector_bounds` (the visited xyz box, plus +/- `--box_rad` roll / pitch / yaw around the home with
+`--teleop.use_rotation=true`), the start joints as `fixed_reset_joint_positions` and the matching
+`policy.dataset_stats` for the hil-serl state (`relative_ee_frame`): pose relative to the home, twist,
 force / torque (with `--robot.use_ft_sensor=true`) and gripper. With `--write_configs=true` it then offers to write
 them into `configs/env.json` and `configs/train.json`.
 
@@ -90,11 +91,12 @@ class XArmTeleoperateConfig:
     # Rotation (rad) for a full SpaceMouse tilt / twist, per control step (`--teleop.use_rotation=true`). Use the
     # same value in `env.processor.inverse_kinematics.end_effector_rot_step`.
     end_effector_rot_step: float = 0.1
-    # Safety box (meters / radians, robot base frame, roll by magnitude). If unset, a box of +/- `box_m` and
-    # +/- `box_rad` around the start pose is used.
+    # Safety box while teleoperating (meters / radians, robot base frame, roll by magnitude). If unset, a box of
+    # +/- `box_m` and +/- `box_rad` around the start pose is used. With `write_configs`, the written bounds are the
+    # visited xyz range and +/- `box_rad` around the start pose (the home of every episode) for roll / pitch / yaw.
     end_effector_bounds: dict[str, list[float]] | None = None
     box_m: float = 0.30
-    box_rad: float = 0.5
+    box_rad: float = 1.57
     # Range of the force (N) / torque (Nm) normalization in `policy.dataset_stats`, about the contact forces
     # expected during the task.
     force_range_n: float = 30.0
@@ -127,30 +129,40 @@ def bounded_rpy(orientation: Rotation) -> np.ndarray:
 
 @dataclass
 class VisitedRange:
-    """Range of the absolute pose (bounds) and of the pose relative to the start pose (state stats)."""
+    """
+    The poses visited since the start: range of the absolute pose (bounds) and of the pose relative to the home
+    (state stats). The first pose is the home, `home_joints` its joint angles (degrees).
+    """
 
-    start_position: np.ndarray
-    start_orientation: Rotation
-    pose_min: np.ndarray
-    pose_max: np.ndarray
-    relative_min: np.ndarray
-    relative_max: np.ndarray
-
-    @classmethod
-    def at(cls, position: np.ndarray, orientation: Rotation) -> "VisitedRange":
-        pose = np.concatenate([position, bounded_rpy(orientation)])
-        return cls(position, orientation, pose.copy(), pose.copy(), np.zeros(6), np.zeros(6))
+    home_joints: list[float]
+    positions: list[np.ndarray] = field(default_factory=list)
+    orientations: list[Rotation] = field(default_factory=list)
+    pose_min: np.ndarray | None = None
+    pose_max: np.ndarray | None = None
 
     def update(self, position: np.ndarray, orientation: Rotation) -> None:
+        self.positions.append(position)
+        self.orientations.append(orientation)
         pose = np.concatenate([position, bounded_rpy(orientation)])
+        if self.pose_min is None or self.pose_max is None:
+            self.pose_min, self.pose_max = pose.copy(), pose.copy()
         self.pose_min, self.pose_max = np.minimum(self.pose_min, pose), np.maximum(self.pose_max, pose)
-        # Same transform as `EERelativeObservationStep`.
-        start_inv = self.start_orientation.inv()
-        relative = np.concatenate(
-            [start_inv.apply(position - self.start_position), (start_inv * orientation).as_euler("xyz")]
+
+    def relative_range(self) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Range of the visited poses relative to the first one, the home of every episode, with the transform of
+        `EERelativeObservationStep`: the state the policy sees if it goes where you went.
+        """
+        home_position, home_inv = self.positions[0], self.orientations[0].inv()
+        relative = np.array(
+            [
+                np.concatenate(
+                    [home_inv.apply(position - home_position), (home_inv * orientation).as_euler("xyz")]
+                )
+                for position, orientation in zip(self.positions, self.orientations, strict=True)
+            ]
         )
-        self.relative_min = np.minimum(self.relative_min, relative)
-        self.relative_max = np.maximum(self.relative_max, relative)
+        return relative.min(axis=0), relative.max(axis=0)
 
 
 def find_config_values(
@@ -159,11 +171,24 @@ def find_config_values(
     """Config values from this session: `inverse_kinematics`, home joints and `policy.dataset_stats`."""
     use_rotation = cfg.teleop.use_rotation
     n_pose = 6 if use_rotation else 3
+    assert visited.pose_min is not None and visited.pose_max is not None
+    relative_min, relative_max = visited.relative_range()
+    # xyz: the workspace you visited. Roll / pitch / yaw: +/- `box_rad` around the home (the start pose), so the
+    # policy can rotate both ways from where every episode starts. |roll| cannot exceed pi.
+    bounds_min, bounds_max = visited.pose_min[:3].tolist(), visited.pose_max[:3].tolist()
+    if use_rotation:
+        home_rpy = bounded_rpy(visited.orientations[0])
+        rpy_min, rpy_max = home_rpy - cfg.box_rad, home_rpy + cfg.box_rad
+        rpy_min[0], rpy_max[0] = max(rpy_min[0], 0.0), min(rpy_max[0], np.pi)
+        bounds_min += rpy_min.tolist()
+        bounds_max += rpy_max.tolist()
+        # The relative orientation in the state can reach +/- `box_rad` from the home.
+        relative_min[3:6], relative_max[3:6] = -cfg.box_rad, cfg.box_rad
     inverse_kinematics = {
         "urdf_path": None,
         "end_effector_bounds": {
-            "min": visited.pose_min[:n_pose].round(4).tolist(),
-            "max": visited.pose_max[:n_pose].round(4).tolist(),
+            "min": np.round(bounds_min, 4).tolist(),
+            "max": np.round(bounds_max, 4).tolist(),
         },
         "end_effector_step_sizes": cfg.end_effector_step_sizes,
         "delta_reference": cfg.delta_reference,
@@ -173,15 +198,15 @@ def find_config_values(
         inverse_kinematics["end_effector_rot_step"] = cfg.end_effector_rot_step
     if cfg.reference_clip is not None:
         inverse_kinematics["reference_clip"] = cfg.reference_clip
-    home_joints = [round(a, 2) for a in robot.get_joint_positions()]
+    home_joints = [round(a, 2) for a in visited.home_joints]
 
     # State layout of `XArm.observation_features` after `EERelativeObservationStep`: relative pose, twist in the
     # end-effector frame, [force, torque], gripper. The end-effector frame mixes the base axes, so every linear
     # (angular) velocity gets the largest speed at full deflection.
     linear_speed = round(max(cfg.end_effector_step_sizes.values()) * cfg.fps, 4)
     angular_speed = round((cfg.end_effector_rot_step if use_rotation else 0.1) * cfg.fps, 4)
-    state_min = [*visited.relative_min.round(4).tolist(), *[-linear_speed] * 3, *[-angular_speed] * 3]
-    state_max = [*visited.relative_max.round(4).tolist(), *[linear_speed] * 3, *[angular_speed] * 3]
+    state_min = [*relative_min.round(4).tolist(), *[-linear_speed] * 3, *[-angular_speed] * 3]
+    state_max = [*relative_max.round(4).tolist(), *[linear_speed] * 3, *[angular_speed] * 3]
     if not use_rotation:
         # The orientation is held, keep a non-degenerate range for the normalization.
         state_min[3:6], state_max[3:6] = [-0.1] * 3, [0.1] * 3
@@ -283,7 +308,9 @@ def teleoperate(cfg: XArmTeleoperateConfig):
         to_output=transition_to_robot_action,
     )
 
-    visited = VisitedRange.at(start_position, start_orientation)
+    # The start pose is the home of every episode.
+    visited = VisitedRange(home_joints=robot.get_joint_positions())
+    visited.update(start_position, start_orientation)
     timer = CycleTimer(cfg.fps, records_data=False)
     try:
         while True:
@@ -316,8 +343,8 @@ def teleoperate(cfg: XArmTeleoperateConfig):
                 )
             print(
                 f"TCP (m, rad) {np.array2string(tcp, precision=3)}  gripper {obs['gripper.pos']:.2f}{force}  "
-                f"relative min {np.array2string(visited.relative_min, precision=3)} max "
-                f"{np.array2string(visited.relative_max, precision=3)}"
+                f"visited min {np.array2string(visited.pose_min, precision=3)} max "
+                f"{np.array2string(visited.pose_max, precision=3)}"
             )
             move_cursor_up(1)
             timer.wait()
