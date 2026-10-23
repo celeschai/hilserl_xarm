@@ -124,7 +124,7 @@ Code involved:
    uv run python examples/xarm_hilserl/probe_admittance.py track    # admittance on: a ~20 N push moves the arm ~1 cm, it comes back
    ```
 
-   `ft_ext_force` is in the tool frame (with the gripper pointing down, pushing up reads -Fz). `robot.ft_sensor_frame: "tool"` rotates it into the base frame. The sensor is zeroed after every reset, so a contact or cable pull at reset time shifts the zero for the whole episode.
+   `ft_ext_force` is in the tool frame (with the gripper pointing down, pushing up reads -Fz). `robot.ft_sensor_frame: "tool"` uses it as is, as hil-serl does with the Franka `K_F_ext_hat_K`; `"base"` rotates it into the base frame. Datasets recorded before this change have base-frame force, convert them with `convert_ft_frame.py`. The sensor is zeroed after every reset, so a contact or cable pull at reset time shifts the zero for the whole episode.
 
 ## Controls reference
 

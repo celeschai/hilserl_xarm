@@ -288,7 +288,7 @@ class XArm(Robot):
         if self.config.use_ft_sensor:
             wrench = np.asarray(self._api.ft_ext_force, dtype=float)
             force, torque = wrench[:3], wrench[3:6]
-            if self.config.ft_sensor_frame == "tool":
+            if self.config.ft_sensor_frame == "base":
                 force, torque = orientation.apply(force), orientation.apply(torque)
             obs_dict.update(zip(FORCE_KEYS, force.tolist(), strict=True))
             obs_dict.update(zip(TORQUE_KEYS, torque.tolist(), strict=True))

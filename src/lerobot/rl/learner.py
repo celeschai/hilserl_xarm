@@ -309,6 +309,7 @@ def add_actor_information_and_train(
     log_freq = cfg.log_freq
     save_freq = cfg.save_freq
     policy_parameters_push_frequency = cfg.policy.actor_learner_config.policy_parameters_push_frequency
+    policy_parameters_push_steps = cfg.policy.actor_learner_config.policy_parameters_push_steps
     saving_checkpoint = cfg.save_checkpoint
     online_steps = cfg.policy.online_steps
 
@@ -419,7 +420,11 @@ def add_actor_information_and_train(
         stats = trainer.training_step()
 
         # Push policy to actors if needed
-        if time.time() - last_time_policy_pushed > policy_parameters_push_frequency:
+        if policy_parameters_push_steps is not None:
+            push_policy = algorithm.optimization_step % policy_parameters_push_steps == 0
+        else:
+            push_policy = time.time() - last_time_policy_pushed > policy_parameters_push_frequency
+        if push_policy:
             push_actor_policy_to_queue(parameters_queue=parameters_queue, algorithm=algorithm)
             last_time_policy_pushed = time.time()
 

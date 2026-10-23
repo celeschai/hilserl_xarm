@@ -40,8 +40,8 @@ class XArmConfig(RobotConfig):
     # (`tcp_force` / `tcp_torque` of rail-berkeley/hil-serl). The sensor is zeroed after every reset, so run
     # the load identification in UFACTORY Studio first.
     use_ft_sensor: bool = False
-    # Frame `ft_ext_force` is reported in: "tool" (rotated into the base frame with the TCP orientation, as the
-    # Franka `O_F_ext_hat_K` used by hil-serl) or "base" (used as is).
+    # Frame of the force / torque observation: "tool" (`ft_ext_force` as reported, as the Franka
+    # `K_F_ext_hat_K` used by hil-serl) or "base" (rotated into the base frame with the TCP orientation).
     ft_sensor_frame: str = "tool"
 
     # Compliance during episodes, the counterpart of hil-serl's Cartesian impedance controller with
