@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import functools
+import logging
 import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
@@ -418,6 +419,7 @@ class ReplayBuffer:
         use_drq: bool = True,
         storage_device: str = "cpu",
         optimize_memory: bool = False,
+        trim_at_success: bool = False,
     ) -> "ReplayBuffer":
         """
         Convert a LeRobotDataset into a ReplayBuffer.
@@ -433,6 +435,9 @@ class ReplayBuffer:
             use_drq (bool): Whether to use DrQ image augmentation when sampling.
             storage_device (str): Device for storing tensor data. Using "cpu" saves GPU memory.
             optimize_memory (bool): If True, reduces memory usage by not duplicating state data.
+            trim_at_success (bool): If True, end each episode at its first success frame (reward > 0), which
+                becomes terminal, and drop the episodes without one. For datasets that keep recording after
+                success (e.g. to also train a reward classifier) used where success ends the episode.
 
         Returns:
             ReplayBuffer: The replay buffer with dataset transitions.
@@ -457,7 +462,9 @@ class ReplayBuffer:
         )
 
         # Convert dataset to transitions
-        list_transition = cls._lerobotdataset_to_transitions(dataset=lerobot_dataset, state_keys=state_keys)
+        list_transition = cls._lerobotdataset_to_transitions(
+            dataset=lerobot_dataset, state_keys=state_keys, trim_at_success=trim_at_success
+        )
 
         # Initialize the buffer with the first transition to set up storage tensors
         if list_transition:
@@ -611,6 +618,7 @@ class ReplayBuffer:
     def _lerobotdataset_to_transitions(
         dataset: LeRobotDataset,
         state_keys: Sequence[str] | None = None,
+        trim_at_success: bool = False,
     ) -> list[Transition]:
         """
         Convert a LeRobotDataset into a list of RL (s, a, r, s', done) transitions.
@@ -633,9 +641,13 @@ class ReplayBuffer:
                 ["observation.state", "observation.environment_state"].
                 If None, you must handle or define default keys.
 
+            trim_at_success (bool):
+                If True, keep each episode only up to its first success frame (reward > 0), marked done, and
+                drop the episodes without one.
+
         Returns:
             transitions (list[Transition]):
-                A list of Transition dictionaries with the same length as `dataset`.
+                A list of Transition dictionaries, one per kept frame of `dataset`.
         """
         if state_keys is None:
             raise ValueError("State keys must be provided when converting LeRobotDataset to Transitions.")
@@ -655,7 +667,14 @@ class ReplayBuffer:
         if not has_done_key:
             print("'next.done' key not found in dataset. Inferring from episode boundaries...")
 
+        keep = [True] * num_frames
+        success_ends: set[int] = set()
+        if trim_at_success:
+            keep, success_ends = _frames_until_first_success(dataset)
+
         for i in tqdm(range(num_frames)):
+            if not keep[i]:
+                continue
             current_sample = dataset[i]
 
             # ----- 1) Current state -----
@@ -671,7 +690,9 @@ class ReplayBuffer:
             reward = float(current_sample[REWARD].item())  # ensure float
 
             # Determine done flag - use next.done if available, otherwise infer from episode boundaries
-            if has_done_key:
+            if i in success_ends:
+                done = True
+            elif has_done_key:
                 done = bool(current_sample[DONE].item())  # ensure bool
             else:
                 # If this is the last frame or if next frame is in a different episode, mark as done
@@ -729,6 +750,27 @@ class ReplayBuffer:
             transitions.append(transition)
 
         return transitions
+
+
+def _frames_until_first_success(dataset: LeRobotDataset) -> tuple[list[bool], set[int]]:
+    """Per frame of `dataset`, whether it is at or before the first success (reward > 0) of an episode that has
+    one, and the indices of those first success frames. Reads only the reward column, without decoding video."""
+    columns = dataset.select_columns(["episode_index", REWARD])
+    episodes = [int(e) for e in columns["episode_index"]]
+    successes = [float(torch.as_tensor(r).flatten()[0]) > 0 for r in columns[REWARD]]
+
+    first_success: dict[int, int] = {}
+    for i, (episode, success) in enumerate(zip(episodes, successes, strict=True)):
+        if success and episode not in first_success:
+            first_success[episode] = i
+    keep = [episode in first_success and i <= first_success[episode] for i, episode in enumerate(episodes)]
+
+    num_episodes = len(set(episodes))
+    logging.info(
+        f"Kept the {len(first_success)} of {num_episodes} episodes with a success, up to their first success: "
+        f"{sum(keep)} of {len(keep)} frames"
+    )
+    return keep, set(first_success.values())
 
 
 def _uint8_to_float(t: torch.Tensor) -> torch.Tensor:

@@ -311,7 +311,9 @@ class XArm(Robot):
         gripper target in [0, 1].
 
         Nothing is sent while the controller reports an error. The gripper is only commanded when its target
-        changes, so the arm streaming is not slowed down by the gripper's Modbus link.
+        changes, so the arm streaming is not slowed down by the gripper's Modbus link. A change then holds the
+        step for `gripper_sleep_s`, so the gripper finishes moving before the next observation and cannot be
+        switched back mid-stroke.
 
         Returns:
             RobotAction: the action actually sent (gripper clipped to [0, 1]).
@@ -345,6 +347,9 @@ class XArm(Robot):
             )
             if code == 0:
                 self._last_gripper_target = gripper
+                # As `_send_gripper_command` of rail-berkeley/hil-serl's `FrankaEnv`
+                if self.config.gripper_sleep_s > 0:
+                    time.sleep(self.config.gripper_sleep_s)
             else:
                 logger.warning(f"{self} set_gripper_position returned code {code}")
 

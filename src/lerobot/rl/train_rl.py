@@ -43,6 +43,14 @@ class TrainRLServerPipelineConfig(TrainPipelineConfig):
     # `dataset_offline/`, as saved with every checkpoint), e.g. after relabeling them. The networks start
     # fresh, so they never train on the previous labels. Ignored when resuming.
     buffers_path: str | None = None
+    # Also save the full replay buffers with every `buffer_save_freq`-th optimization step's checkpoint. If None,
+    # they are saved in full only on shutdown; in between, received transitions go to an append-only journal
+    # (see `TransitionJournal`), so checkpoints do not stop training for minutes.
+    buffer_save_freq: int | None = None
+    # Keep each offline (demo) episode only up to its first success, which becomes terminal as in online
+    # episodes, and drop the episodes without one. Lets demos keep recording after success, so the same
+    # dataset also trains the reward classifier.
+    offline_trim_at_success: bool = False
 
     def validate(self) -> None:
         super().validate()

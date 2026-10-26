@@ -828,9 +828,13 @@ def control_loop(
             truncated = transition.get(TransitionKey.TRUNCATED, False)
 
             if cfg.mode == "record":
-                success_latched = success_latched or bool(
-                    transition[TransitionKey.INFO].get(TeleopEvents.SUCCESS, False)
-                )
+                if not success_latched and transition[TransitionKey.INFO].get(TeleopEvents.SUCCESS, False):
+                    success_latched = True
+                    if not (terminated or truncated):
+                        logging.info(
+                            f"Success marked at step {episode_step}: the following frames are labeled success, "
+                            "press Backspace to end the episode"
+                        )
                 reward = 1.0 if success_latched else transition[TransitionKey.REWARD]
                 action_to_record = transition[TransitionKey.COMPLEMENTARY_DATA].get(
                     "teleop_action", transition[TransitionKey.ACTION]
@@ -930,6 +934,19 @@ def replay_trajectory(
 def main(cfg: GymManipulatorConfig) -> None:
     """Main entry point for gym manipulator script."""
     init_logging()
+    processor_cfg = cfg.env.processor
+    if (
+        cfg.mode == "record"
+        and processor_cfg.reset is not None
+        and not processor_cfg.reset.terminate_on_success
+        and processor_cfg.reward_classifier is not None
+        and processor_cfg.reward_classifier.pretrained_path is not None
+    ):
+        # Episodes run on past success, so the classifier would only write its predictions into the labels.
+        logging.info(
+            "Recording without terminate_on_success: the reward classifier is off, Enter labels success"
+        )
+        processor_cfg.reward_classifier.pretrained_path = None
     env, teleop_device = make_robot_env(cfg.env)
     env_processor, action_processor = make_processors(env, teleop_device, cfg.env, cfg.device)
 

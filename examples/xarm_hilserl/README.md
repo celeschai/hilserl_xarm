@@ -3,7 +3,7 @@
 Train an xArm7 on a real-world task with LeRobot's [HIL-SERL](https://hil-serl.github.io/) implementation:
 
 1. record demonstrations with a 3Dconnexion SpaceMouse;
-2. train a reward classifier;
+2. train a reward classifier on the same recordings;
 3. train a policy online with SAC, taking over with the SpaceMouse whenever it needs correcting;
 4. run the learned policy on its own.
 
@@ -143,8 +143,7 @@ Code involved:
 | ----------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------- | -------------------- | ----------------- | -------------------------------- |
 | `teleoperate.py`                          | —                                                          | Clear a fault and move home (when asked)              | —                    | —                 | Quit and print the config values |
 | Dry run (`env.json`)                      | Latch intervention on / off                                | End episode: success                                  | End episode: failure | End episode: redo | Quit                             |
-| Demo recording (`env.json --mode=record`) | Latch intervention on / off                                | End + save: success                                   | End + save: failure  | Discard + redo    | Quit                             |
-| Classifier recording (see step 5)         | Latch intervention on / off                                | Press at success: every later frame labeled success   | End + save           | Discard + redo    | Quit                             |
+| Recording (step 3)                        | Latch intervention on / off                                | Mark success: this and every later frame labeled success, recording continues | End + save (a failure if Enter wasn't pressed) | Discard + redo    | Quit                             |
 | Online training (actor)                   | Latch intervention on / off                                | End episode: success                                  | End episode: failure | End episode       | Quit actor / learner             |
 | Evaluation (`eval_policy.py`)             | Latch a safety takeover on / off                           | End episode: success                                  | End episode: failure | End episode       | Quit, print results              |
 
@@ -158,7 +157,7 @@ All commands run from the repository root, through `uv run` so they use the proj
 
 | Config                         | Used by                                                                                               |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `env.json`                     | `gym_manipulator`: dry run, demo recording and classifier recording, switched with command-line flags |
+| `env.json`                     | `gym_manipulator`: dry run and recording, switched with command-line flags                            |
 | `train.json`                   | The learner, the actor and `eval_policy.py`                                                           |
 | `reward_classifier_train.json` | `lerobot-train` for the reward classifier                                                             |
 
@@ -237,17 +236,36 @@ This runs exactly the loop used for recording and training, with no policy:
 
 ### 3. Record demonstrations
 
+One recording serves as both the demos (step 6) and the reward classifier's training data (step 5):
+
 ```bash
-uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/configs/env.json --mode=record
+uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/configs/env.json \
+    --mode=record --dataset.num_episodes_to_record=30 \
+    --env.processor.reset.terminate_on_success=false
 ```
 
-For each episode:
+With `terminate_on_success=false`, Enter marks success without ending the episode. The reward classifier set in `env.json` is not used, so the labels come only from your keys.
+
+For each successful episode:
 
 1. Wait for the reset.
 2. Do the task with the SpaceMouse, starting right away so few idle frames are recorded.
-3. Press **Enter** when it's done.
+3. Press **Enter** as soon as it's done. This frame and every later one are labeled success.
+4. Keep the scene in the success state for a few seconds. Small moves are fine; they give the classifier more varied success views.
+5. Press **Backspace** to end and save the episode, or let it time out.
 
-Press **`r`** to discard an attempt that went wrong: like rail-berkeley/hil-serl, keep only successful demos (about 20, `num_episodes_to_record`).
+To record a failure, press **Backspace** without pressing Enter: the whole episode is labeled failure. Record near-misses this way, e.g. the object almost in place, so the classifier learns the boundary. Press **`r`** to discard an attempt you don't want to keep at all.
+
+`num_episodes_to_record` counts every saved episode, so for about 20 successful demos plus 10 failures, set it to 30.
+
+How each step uses the episodes:
+
+| Step                             | Successful episodes                                                                                       | Failed episodes |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------- |
+| Reward classifier (step 5)       | Every frame: label 0 before Enter, 1 from Enter on                                                        | Every frame, label 0 |
+| Offline demo buffer (step 6)     | Frames up to the Enter frame. That frame is the terminal success, as when the classifier ends an online episode | Dropped, as in rail-berkeley/hil-serl, which keeps only successful demos |
+
+`offline_trim_at_success: true` in `train.json` does this cutting when the learner loads the demos. The dataset itself keeps every frame.
 
 The dataset is written to `~/.cache/huggingface/lerobot/local/xarm7_hilserl_demos_6dof_ft`, with both camera images at full resolution so step 4 can crop them. Demos must contain every camera the policy uses: after adding, removing or moving a camera, record them again.
 
@@ -288,25 +306,22 @@ Recordings made from now on are already cropped to 128×128.
 
 ### 5. Train the reward classifier
 
-The classifier detects success from the camera images (both cameras); it gives the reward and ends successful episodes during training. First record labeled data:
+The classifier detects success from the camera images (all cameras); it gives the reward and ends successful episodes during training. It trains on every frame of the cropped recording from step 4, using the success / failure labels from step 3:
+
+```bash
+uv run lerobot-train --config_path examples/xarm_hilserl/configs/reward_classifier_train.json \
+    --dataset.repo_id=local/xarm7_hilserl_demos_6dof_ft_cropped_resized \
+    --output_dir outputs/train/xarm7_reward_classifier
+```
+
+Leave `dataset.root` in `reward_classifier_train.json` at `null`, so the dataset is read from the default cache directory.
+
+To add classifier data without adding demos (e.g. more failures, or the scene variations the classifier gets wrong), record into a separate dataset with the same command and keys as step 3, and train on that one. The crop in `env.json` is set by now, so it is already 128×128:
 
 ```bash
 uv run python -m lerobot.rl.gym_manipulator --config_path examples/xarm_hilserl/configs/env.json \
     --mode=record --dataset.repo_id=local/xarm7_hilserl_classifier --dataset.num_episodes_to_record=15 \
     --env.processor.reset.terminate_on_success=false
-```
-
-For each episode (`terminate_on_success=false`, so episodes don't end on success):
-
-1. Do the task with the SpaceMouse.
-2. Once it's done, press **Enter** once. From then on every frame of the episode is labeled success, so keep the scene in the success state for a few seconds.
-3. End the episode with **Backspace**, or let it time out.
-
-Vary the scene: also record near-misses and failures. Then train:
-
-```bash
-uv run lerobot-train --config_path examples/xarm_hilserl/configs/reward_classifier_train.json \
-    --output_dir outputs/train/xarm7_reward_classifier
 ```
 
 To validate it:
@@ -336,7 +351,7 @@ uv run python -m lerobot.rl.actor --config_path examples/xarm_hilserl/configs/tr
 The actor runs the policy on the robot at 10 Hz and streams transitions to the learner over gRPC. The learner trains SAC on a 50/50 mix of:
 
 - online transitions;
-- your demos plus every intervention.
+- your demos (up to their success, see step 3) plus every intervention.
 
 It sends updated weights back every `policy_parameters_push_frequency` seconds.
 
@@ -349,7 +364,7 @@ How to intervene:
 
 The intervention rate should fall over time. The learner tracks it as `Intervention rate` in Weights & Biases (set `wandb.enable: true` in `train.json`).
 
-Checkpoints are written to `outputs/train/<date>/<time>_xarm7_hilserl/checkpoints/<step>/pretrained_model` (`last` points to the latest), with the replay buffers in `<run>/dataset` and `<run>/dataset_offline`. To stop, press Ctrl+C once in the actor, then once in the learner, and wait: the learner saves a last checkpoint and the buffers before exiting (a second Ctrl+C skips the save).
+Checkpoints are written to `outputs/train/<date>/<time>_xarm7_hilserl/checkpoints/<step>/pretrained_model` (`last` points to the latest), with the replay buffers in `<run>/dataset` and `<run>/dataset_offline`. Checkpoints save only the networks, so training does not pause; each episode the learner receives is appended to `<run>/dataset_journal`, which is replayed on resume. To stop, press Ctrl+C once in the actor, then once in the learner, and wait: the learner writes the full buffers before exiting, which takes a few minutes, and then clears the journal. A second Ctrl+C skips that save; the journal still holds the episodes, so a resume loses nothing, but the relabel tools only read the full save. Set `buffer_save_freq` to also write the full buffers every that many optimization steps.
 
 - To continue the same run (weights, optimizer and buffers), run the learner with `--resume=true --config_path=<run>/checkpoints/last/pretrained_model/train_config.json`.
 - To train new weights from the episodes collected so far, start a new run with `--buffers_path=<run>`.
@@ -386,7 +401,7 @@ The robot runs the policy for `eval.n_episodes` episodes, with the same resets, 
 | `policy_parameters_push_frequency`                              | Seconds between weight updates on the actor; 2 s by default.                                                                                                                                                               |
 | Loop slower than 10 Hz                                          | The actor only warns when policy inference is too slow. Robot I/O (TCP and gripper reads, camera) is timed by the summary `teleoperate.py` prints on exit. Check it there first.                                           |
 | Replay buffer memory                                            | Buffers live in CPU RAM (`storage_device: cpu`), about 20 GB per 100k transitions. Reduce `online_buffer_capacity` / `offline_buffer_capacity` if needed.                                                                  |
-| Reward classifier unreliable                                    | Make sure success is clearly visible in the `side` view, record more varied success and failure examples, and check the crop doesn't cut the object out.                                                                   |
+| Reward classifier unreliable                                    | Make sure success is clearly visible in the `side` view, record more varied success and failure examples, and check the crop doesn't cut the object out. Press Enter exactly when success becomes visible: frames before it are labeled failure. |
 | D405 image dark                                                 | The D405's colour image is darker than the D435i's. Add light to the scene, or set `exposure` / `gain` on the `side` camera config (try values in `realsense-viewer` first). Use the same settings for demos and training. |
 | `Failed to open RealSenseCamera(...)`                           | Another program (`realsense-viewer`, a still-running script) has the camera open. Close it. Also check the serial and that it is on USB 3.                                                                                 |
 | SpaceMouse not found                                            | Check the udev rule above and that `ls -l /dev/hidraw*` is readable.                                                                                                                                                       |

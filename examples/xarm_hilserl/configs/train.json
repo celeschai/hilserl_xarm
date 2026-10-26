@@ -15,7 +15,7 @@
     "disable_artifact": true
   },
   "dataset": {
-    "repo_id": "local/xarm7_hilserl_demos",
+    "repo_id": "local/xarm7_hilserl_demos_6dof_ft",
     "use_imagenet_stats": false
   },
   "algorithm": {
@@ -42,6 +42,7 @@
   },
   "mixer": "online_offline",
   "online_ratio": 0.5,
+  "offline_trim_at_success": true,
   "policy": {
     "type": "gaussian_actor",
     "push_to_hub": false,
@@ -246,6 +247,7 @@
       "gripper_open_pos": 800,
       "gripper_close_pos": 0,
       "gripper_speed": 5000,
+      "gripper_sleep_s": 0.6,
       "random_xy_range_m": 0.0,
       "cameras": {
         "wrist": {
@@ -326,26 +328,7 @@
         "relative_ee_frame": true
       },
       "image_preprocessing": {
-        "crop_params_dict": {
-          "observation.images.wrist": [
-            1,
-            0,
-            477,
-            640
-          ],
-          "observation.images.side": [
-            144,
-            77,
-            313,
-            470
-          ],
-          "observation.images.front": [
-            67,
-            15,
-            413,
-            606
-          ]
-        },
+        "crop_params_dict": null,
         "resize_size": [
           128,
           128
@@ -353,7 +336,7 @@
       },
       "gripper": {
         "use_gripper": true,
-        "gripper_penalty": -0.02
+        "gripper_penalty": -0.05
       },
       "reset": {
         "fixed_reset_joint_positions": [
@@ -403,25 +386,25 @@
         "action_frame": "ee",
         "reference_clip": {
           "min": [
+            -0.002,
+            -0.0016,
+            -0.005,
             -0.01,
-            -0.01,
-            -0.01,
-            -0.05,
-            -0.05,
-            -0.05
+            -0.025,
+            -0.005
           ],
           "max": [
+            0.0075,
+            0.0016,
+            0.0055,
             0.01,
-            0.01,
-            0.01,
-            0.05,
-            0.05,
-            0.05
+            0.025,
+            0.005
           ]
         }
       },
       "reward_classifier": {
-        "pretrained_path": "outputs/train/xarm7_reward_classifier_v3/checkpoints/last/pretrained_model",
+        "pretrained_path": "outputs/train/xarm7_reward_classifier_v5/checkpoints/last/pretrained_model",
         "success_threshold": 0.5,
         "success_reward": 1.0
       }

@@ -471,6 +471,29 @@ def test_from_lerobot_dataset(tmp_path):
         )
 
 
+def test_from_lerobot_dataset_trim_at_success(tmp_path):
+    states = [create_dummy_state() for _ in range(6)]
+    actions = [create_dummy_action() for _ in range(6)]
+
+    # Episode 0 keeps recording after its success at frame 1, episode 1 never succeeds.
+    replay_buffer = create_empty_replay_buffer()
+    for i, (reward, done) in enumerate([(0.0, False), (1.0, False), (1.0, False), (1.0, True)]):
+        replay_buffer.add(states[i], actions[i], reward, states[i], done, False)
+    for i, (reward, done) in enumerate([(0.0, False), (0.0, True)], start=4):
+        replay_buffer.add(states[i], actions[i], reward, states[i], done, False)
+    ds = replay_buffer.to_lerobot_dataset(DUMMY_REPO_ID, root=tmp_path / "test")
+
+    trimmed = ReplayBuffer.from_lerobot_dataset(
+        ds, state_keys=list(state_dims()), device="cpu", capacity=10, use_drq=False, trim_at_success=True
+    )
+
+    assert len(trimmed) == 2
+    assert torch.equal(trimmed.actions[:2], replay_buffer.actions[:2])
+    assert trimmed.rewards[:2].tolist() == [0.0, 1.0]
+    assert trimmed.dones[:2].tolist() == [False, True]
+    assert torch.equal(trimmed.next_states[OBS_STATE][0], replay_buffer.states[OBS_STATE][1])
+
+
 def test_buffer_sample_alignment():
     # Initialize buffer
     buffer = ReplayBuffer(capacity=100, device="cpu", state_keys=["state_value"], storage_device="cpu")

@@ -183,7 +183,8 @@ def test_force_rotated_into_base_frame(make_robot, arm):
 
 def test_send_action_pose_target(robot, arm):
     action = {"ee.x": 0.31, "ee.y": -0.05, "ee.z": 0.25, "ee.rx": 3.0, "ee.ry": 0.1, "ee.rz": 1.5}
-    sent = robot.send_action({**action, "gripper.pos": 0.0})
+    with patch(f"{_MODULE}.time.sleep"):
+        sent = robot.send_action({**action, "gripper.pos": 0.0})
 
     args, kwargs = arm.set_position.call_args
     assert args == pytest.approx((310.0, -50.0, 250.0, 3.0, 0.1, 1.5))
@@ -196,12 +197,44 @@ ACTION = {"ee.x": 0.3, "ee.y": 0.0, "ee.z": 0.2, "ee.rx": math.pi, "ee.ry": 0.0,
 
 def test_gripper_only_commanded_on_change(robot, arm):
     action = {**ACTION, "gripper.pos": 1.0}
-    robot.send_action(action)
-    robot.send_action(action)
-    arm.set_gripper_position.assert_called_once_with(0.0, wait=False, wait_motion=False)
+    with patch(f"{_MODULE}.time.sleep"):
+        robot.send_action(action)
+        robot.send_action(action)
+        arm.set_gripper_position.assert_called_once_with(0.0, wait=False, wait_motion=False)
 
-    robot.send_action({**action, "gripper.pos": 0.0})
+        robot.send_action({**action, "gripper.pos": 0.0})
     assert arm.set_gripper_position.call_args == call(800.0, wait=False, wait_motion=False)
+
+
+def test_gripper_change_holds_the_step(make_robot, arm):
+    robot = make_robot(gripper_sleep_s=0.6)
+    robot.connect()
+    with patch(f"{_MODULE}.time.sleep") as sleep:
+        robot.send_action({**ACTION, "gripper.pos": 1.0})
+        sleep.assert_called_once_with(0.6)
+
+        # No change, no hold
+        robot.send_action({**ACTION, "gripper.pos": 1.0})
+        sleep.assert_called_once()
+
+        # A failed gripper command does not hold the step either
+        arm.set_gripper_position.return_value = 1
+        robot.send_action({**ACTION, "gripper.pos": 0.0})
+        sleep.assert_called_once()
+
+
+def test_gripper_sleep_disabled(make_robot, arm):
+    robot = make_robot(gripper_sleep_s=0.0)
+    robot.connect()
+    with patch(f"{_MODULE}.time.sleep") as sleep:
+        robot.send_action({**ACTION, "gripper.pos": 1.0})
+    arm.set_gripper_position.assert_called_once()
+    sleep.assert_not_called()
+
+
+def test_gripper_sleep_must_be_non_negative(tmp_path):
+    with pytest.raises(ValueError, match="gripper_sleep_s"):
+        XArmConfig(calibration_dir=tmp_path, gripper_sleep_s=-0.1)
 
 
 def test_fault_blocks_motion(robot, arm):

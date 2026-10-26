@@ -64,6 +64,10 @@ class XArmConfig(RobotConfig):
     gripper_open_pos: int = 800
     gripper_close_pos: int = 0
     gripper_speed: int = 5000
+    # Time (s) `send_action` holds the step after a gripper open / close, as `GRIPPER_SLEEP` of
+    # rail-berkeley/hil-serl: the next observation shows where the gripper ended up and it cannot be switched
+    # back before. A full stroke takes about 0.4 s at `gripper_speed` 5000. 0 disables it.
+    gripper_sleep_s: float = 0.6
 
     # Half-width of a uniform random xy offset (meters) added to the home pose on every reset, as
     # `RANDOM_RESET` in rail-berkeley/hil-serl (their tasks use 0.01-0.02). 0 disables it.
@@ -76,6 +80,8 @@ class XArmConfig(RobotConfig):
         super().__post_init__()
         if self.gripper_open_pos == self.gripper_close_pos:
             raise ValueError("`gripper_open_pos` and `gripper_close_pos` must differ.")
+        if self.gripper_sleep_s < 0:
+            raise ValueError(f"`gripper_sleep_s` must be >= 0, got {self.gripper_sleep_s}.")
         if self.random_xy_range_m < 0:
             raise ValueError(f"`random_xy_range_m` must be >= 0, got {self.random_xy_range_m}.")
         if self.random_rz_range_rad < 0:

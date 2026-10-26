@@ -48,6 +48,7 @@ import logging
 import os
 import shutil
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from pprint import pformat
@@ -106,6 +107,7 @@ from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.io_utils import load_json, write_json
 from lerobot.utils.process import ProcessSignalHandler, ensure_multiprocessing_start_method
 from lerobot.utils.random_utils import load_rng_state, set_seed
+from lerobot.utils.transition import Transition
 from lerobot.utils.utils import (
     format_big_number,
     init_logging,
@@ -115,6 +117,7 @@ from .algorithms.base import RLAlgorithm
 from .algorithms.factory import make_algorithm
 from .buffer import ReplayBuffer
 from .data_sources import OnlineOfflineMixer
+from .journal import JOURNAL_DIR, TransitionJournal
 from .learner_service import MAX_WORKERS, SHUTDOWN_TIMEOUT, LearnerService
 from .train_rl import TrainRLServerPipelineConfig
 from .trainer import RLTrainer
@@ -386,10 +389,24 @@ def add_actor_information_and_train(
     if cfg.dataset is not None:
         dataset_repo_id = cfg.dataset.repo_id
 
+    # Transitions received since the buffers were last saved in full. Replay the ones of the run the buffers
+    # were loaded from on top of its last full save.
+    journal = TransitionJournal(os.path.join(cfg.output_dir, JOURNAL_DIR))
+    buffers_dir = saved_buffers_dir(cfg)
+    if buffers_dir is not None:
+        saved_journal = TransitionJournal(os.path.join(buffers_dir, JOURNAL_DIR))
+        replayed = add_transitions_to_buffers(
+            saved_journal.read(), replay_buffer, offline_replay_buffer, dataset_repo_id
+        )
+        if replayed:
+            logging.info(
+                f"[LEARNER] Replayed {replayed} journaled transitions from {saved_journal.directory}"
+            )
+
     # Latest interaction message, for the interaction step saved with the checkpoint on shutdown.
     last_interaction_message = None
-    # Optimization step of the last checkpoint, so shutdown does not save the same step again.
-    last_saved_step = None
+    # Optimization step of the last full save of the buffers, so shutdown does not save the same step again.
+    last_buffer_save_step = None
 
     # NOTE: THIS IS THE MAIN LOOP OF THE LEARNER
     while True:
@@ -405,6 +422,7 @@ def add_actor_information_and_train(
             offline_replay_buffer=offline_replay_buffer,
             dataset_repo_id=dataset_repo_id,
             shutdown_event=shutdown_event,
+            journal=journal,
         )
 
         # Process all available interaction messages sent by the actor server
@@ -471,6 +489,7 @@ def add_actor_information_and_train(
 
         # Save checkpoint at specified intervals
         if saving_checkpoint and should_save_checkpoint(optimization_step, save_freq, online_steps):
+            save_buffers = cfg.buffer_save_freq is not None and optimization_step % cfg.buffer_save_freq == 0
             save_training_checkpoint(
                 cfg=cfg,
                 optimization_step=optimization_step,
@@ -485,11 +504,14 @@ def add_actor_information_and_train(
                 fps=fps,
                 preprocessor=preprocessor,
                 postprocessor=postprocessor,
+                save_buffers=save_buffers,
+                journal=journal,
             )
-            last_saved_step = optimization_step
+            if save_buffers:
+                last_buffer_save_step = optimization_step
 
-    # Save on shutdown too, so the transitions received since the last checkpoint are kept for a resume.
-    if saving_checkpoint and optimization_step > 0 and optimization_step != last_saved_step:
+    # Save on shutdown too, with the full buffers, so they can be relabeled or resumed from.
+    if saving_checkpoint and optimization_step > 0 and optimization_step != last_buffer_save_step:
         logging.warning(
             "[LEARNER] Saving a checkpoint and the replay buffers before exiting, this can take a few minutes. "
             "Do not press Ctrl+C again: it would stop the save."
@@ -508,6 +530,7 @@ def add_actor_information_and_train(
             fps=fps,
             preprocessor=preprocessor,
             postprocessor=postprocessor,
+            journal=journal,
         )
 
 
@@ -595,9 +618,14 @@ def save_training_checkpoint(
     fps: int = 30,
     preprocessor=None,
     postprocessor=None,
+    save_buffers: bool = True,
+    journal: TransitionJournal | None = None,
 ) -> None:
     """
     Save training checkpoint and associated data.
+
+    With `save_buffers`, the replay buffers are saved in full too and `journal` is cleared, as its transitions
+    are then in the saved buffers.
 
     This function performs the following steps:
     1. Creates a checkpoint directory with the current optimization step
@@ -656,6 +684,10 @@ def save_training_checkpoint(
     # Update the "last" symlink
     update_last_checkpoint(checkpoint_dir)
 
+    if not save_buffers:
+        logging.info("Resume training")
+        return
+
     # TODO : temporary save replay buffer here, remove later when on the robot
     # We want to control this with the keyboard inputs
     # NOTE: Handle the case where the dataset repo id is not specified in the config
@@ -667,6 +699,8 @@ def save_training_checkpoint(
         save_replay_buffer(
             offline_replay_buffer, cfg.dataset.repo_id, fps, os.path.join(cfg.output_dir, "dataset_offline")
         )
+    if journal is not None:
+        journal.clear()
 
     logging.info("Resume training")
 
@@ -850,7 +884,8 @@ def initialize_replay_buffer(
         ReplayBuffer: Initialized replay buffer
     """
     buffers_dir = saved_buffers_dir(cfg)
-    if buffers_dir is None:
+    # Without a full save yet (e.g. after a crash), the buffer is rebuilt from the journal alone.
+    if buffers_dir is None or not os.path.isdir(os.path.join(buffers_dir, "dataset")):
         return ReplayBuffer(
             capacity=cfg.policy.online_buffer_capacity,
             device=device,
@@ -903,7 +938,8 @@ def initialize_offline_replay_buffer(
         ReplayBuffer: Initialized offline replay buffer
     """
     buffers_dir = saved_buffers_dir(cfg)
-    if buffers_dir is None:
+    # Without a full save yet, start from the demos: the journal holds the interventions.
+    if buffers_dir is None or not os.path.isdir(os.path.join(buffers_dir, "dataset_offline")):
         logging.info("make_dataset offline buffer")
         offline_dataset = make_dataset(cfg)
     else:
@@ -922,6 +958,7 @@ def initialize_offline_replay_buffer(
         storage_device=storage_device,
         optimize_memory=True,
         capacity=cfg.policy.offline_buffer_capacity,
+        trim_at_success=cfg.offline_trim_at_success,
     )
     return offline_replay_buffer
 
@@ -1009,6 +1046,7 @@ def process_transitions(
     offline_replay_buffer: ReplayBuffer,
     dataset_repo_id: str | None,
     shutdown_event: Any,  # Event
+    journal: TransitionJournal | None = None,
 ):
     """Process all available transitions from the queue.
 
@@ -1018,28 +1056,49 @@ def process_transitions(
         offline_replay_buffer: Offline replay buffer to add transitions to
         dataset_repo_id: Repository ID for dataset
         shutdown_event: Event to signal shutdown
+        journal: Journal the transitions are appended to, until the next full save of the buffers
     """
     while not transition_queue.empty() and not shutdown_event.is_set():
         transition_list = transition_queue.get()
         transition_list = bytes_to_transitions(buffer=transition_list)
+        if journal is not None:
+            journal.append(transition_list)
+        add_transitions_to_buffers(transition_list, replay_buffer, offline_replay_buffer, dataset_repo_id)
 
-        for transition in transition_list:
-            # Skip transitions with NaN values
-            if check_nan_in_transition(
-                observations=transition["state"],
-                actions=transition[ACTION],
-                next_state=transition["next_state"],
-            ):
-                logging.warning("[LEARNER] NaN detected in transition, skipping")
-                continue
 
-            replay_buffer.add(**transition)
+def add_transitions_to_buffers(
+    transitions: Iterable[Transition],
+    replay_buffer: ReplayBuffer,
+    offline_replay_buffer: ReplayBuffer | None,
+    dataset_repo_id: str | None,
+) -> int:
+    """Add transitions to the online buffer, and the interventions to the offline buffer too.
 
-            # Add to offline buffer if it's an intervention
-            if dataset_repo_id is not None and transition.get("complementary_info", {}).get(
-                TeleopEvents.IS_INTERVENTION.value
-            ):
-                offline_replay_buffer.add(**transition)
+    Returns:
+        The number of transitions added (transitions with NaN values are skipped).
+    """
+    added = 0
+    for transition in transitions:
+        # Skip transitions with NaN values
+        if check_nan_in_transition(
+            observations=transition["state"],
+            actions=transition[ACTION],
+            next_state=transition["next_state"],
+        ):
+            logging.warning("[LEARNER] NaN detected in transition, skipping")
+            continue
+
+        replay_buffer.add(**transition)
+        added += 1
+
+        # Add to offline buffer if it's an intervention
+        if (
+            dataset_repo_id is not None
+            and offline_replay_buffer is not None
+            and (transition.get("complementary_info") or {}).get(TeleopEvents.IS_INTERVENTION.value)
+        ):
+            offline_replay_buffer.add(**transition)
+    return added
 
 
 def process_interaction_messages(

@@ -71,6 +71,7 @@ from lerobot.utils.constants import (
     CHECKPOINTS_DIR,
     DEFAULT_FEATURES,
     DONE,
+    HF_LEROBOT_HOME,
     LAST_CHECKPOINT_LINK,
     OBS_STATE,
     PRETRAINED_MODEL_DIR,
@@ -373,7 +374,9 @@ def export_classifier_dataset(
     if len(chunks) > 1 and len(chunks[-1]) == 1:
         chunks[-2] += chunks.pop()
 
-    template = LeRobotDataset(template_repo_id)
+    # A dataset folder (e.g. an archived one) or a repo id under $HF_LEROBOT_HOME.
+    template_root = Path(template_repo_id) if Path(template_repo_id).is_dir() else None
+    template = LeRobotDataset(template_root.name if template_root else template_repo_id, root=template_root)
     features = {k: v for k, v in template.meta.features.items() if k not in DEFAULT_FEATURES}
     task = str(template.meta.tasks.index[0])
     source = LeRobotDataset(repo_id="local/relabel", root=run_dir / ONLINE_DIR)
@@ -441,8 +444,9 @@ def main():
     )
     parser.add_argument(
         "--classifier-template",
-        default="local/xarm7_hilserl_classifier",
-        help="Classifier dataset whose format the export copies (and that it is meant to be merged with).",
+        default=str(HF_LEROBOT_HOME / "local/archive from failed/xarm7_hilserl_classifier_cropped_resized"),
+        help="Classifier dataset (repo id or dataset folder) whose format the export copies, and that it is meant "
+        "to be merged with. Its images must match the buffer's (cropped and resized).",
     )
     parser.add_argument(
         "--holdout", type=float, default=0.15, help="Fraction of episodes left out of the export."
