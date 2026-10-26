@@ -140,6 +140,7 @@ class RobotEnv(gym.Env):
         reset_time_s: float = 5.0,
         control_period_s: float | None = None,
         use_rotation: bool = False,
+        fault_penalty: float = 0.0,
     ) -> None:
         """Initialize robot environment with configuration options.
 
@@ -153,6 +154,7 @@ class RobotEnv(gym.Env):
                 the start of the step before observing, as in rail-berkeley/hil-serl. The next observation
                 then shows the effect of the action instead of the motion caused by the previous one.
             use_rotation: Whether the action holds rotation deltas (6-DoF end-effector control).
+            fault_penalty: Reward of the step where the robot controller faults, which ends the episode.
         """
         super().__init__()
 
@@ -183,6 +185,7 @@ class RobotEnv(gym.Env):
 
         self.use_gripper = use_gripper
         self.use_rotation = use_rotation
+        self.fault_penalty = fault_penalty
 
         self._raw_joint_positions = None
 
@@ -305,12 +308,13 @@ class RobotEnv(gym.Env):
         info: dict[Any, Any] = {TeleopEvents.IS_INTERVENTION: False}
 
         # A controller fault (e.g. a collision) stops the robot: end the episode as a failure (terminated,
-        # reward 0). The next `reset()` recovers the robot.
+        # reward `fault_penalty`). The next `reset()` recovers the robot.
         if getattr(self.robot, "has_fault", False):
             logging.warning(
                 f"Robot fault, ending the episode as failed: {getattr(self.robot, 'fault_description', '')}"
             )
             terminated = True
+            reward = self.fault_penalty
             info["robot_fault"] = True
 
         return (
@@ -387,6 +391,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
     )
     reset_pose = cfg.processor.reset.fixed_reset_joint_positions if cfg.processor.reset is not None else None
     reset_time_s = cfg.processor.reset.reset_time_s if cfg.processor.reset is not None else 5.0
+    fault_penalty = cfg.processor.reset.fault_penalty if cfg.processor.reset is not None else 0.0
     ik_cfg = cfg.processor.inverse_kinematics
 
     env = RobotEnv(
@@ -397,6 +402,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
         reset_time_s=reset_time_s,
         control_period_s=1.0 / cfg.fps if cfg.fps else None,
         use_rotation=ik_cfg is not None and ik_cfg.use_rotation,
+        fault_penalty=fault_penalty,
     )
 
     return env, teleop_device
@@ -680,6 +686,16 @@ def step_env_and_process_transition(
     return new_transition
 
 
+def take_episode_end_key(teleop_device: Teleoperator | None) -> TeleopEvents | None:
+    """
+    End-of-episode key (success / failure / re-record) pressed since the previous episode ended, typically
+    during the reset, and hand control back to the policy. Call it after `reset_and_build_transition`, so the
+    key does not end the new episode on its first step.
+    """
+    reset_episode_events = getattr(teleop_device, "reset_episode_events", None)
+    return reset_episode_events() if reset_episode_events is not None else None
+
+
 def reset_and_build_transition(
     env: gym.Env,
     env_processor: DataProcessorPipeline[EnvTransition, EnvTransition],
@@ -724,6 +740,7 @@ def control_loop(
     print("- Press Ctrl+C to exit")
 
     transition = reset_and_build_transition(env, env_processor, action_processor)
+    take_episode_end_key(teleop_device)
 
     # Determine if gripper is used
     use_gripper = cfg.env.processor.gripper.use_gripper if cfg.env.processor.gripper is not None else True
@@ -862,6 +879,9 @@ def control_loop(
 
                 # Reset for new episode
                 transition = reset_and_build_transition(env, env_processor, action_processor)
+                key = take_episode_end_key(teleop_device)
+                if key is not None:
+                    logging.info(f"Ignoring {key.value} pressed after the episode ended")
 
             # Maintain fps timing
             precise_sleep(max(dt - (time.perf_counter() - step_start_time), 0.0))

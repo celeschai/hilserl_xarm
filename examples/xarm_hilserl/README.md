@@ -148,6 +148,8 @@ Code involved:
 | Online training (actor)                   | Latch intervention on / off                                | End episode: success                                  | End episode: failure | End episode       | Quit actor / learner             |
 | Evaluation (`eval_policy.py`)             | Latch a safety takeover on / off                           | End episode: success                                  | End episode: failure | End episode       | Quit, print results              |
 
+In online training, Enter / Backspace pressed after an episode already ended (e.g. by the reward classifier), up to the end of the reset, relabels that episode as a success / failure. Episodes shorter than `processor.reset.min_episode_steps` (5 in `train.json`) are not sent to the learner.
+
 **Intervention**, as in rail-berkeley/hil-serl: you intervene on every step where you move the puck (beyond `teleop.deadzone`) or hold a gripper button; on the other steps the policy acts (or, without a policy, the robot holds still). Only the steps with input are labeled as interventions, so letting go of the SpaceMouse hands control back right away and pauses are not recorded as expert "hold still" actions. Press **Space** to latch the intervention on, e.g. to make the arm hold still against the policy; it switches back **off** at the end of every episode. Set `teleop.intervene_on_input=false` for the toggle-only behavior.
 
 ## Step by step
@@ -347,7 +349,10 @@ How to intervene:
 
 The intervention rate should fall over time. The learner tracks it as `Intervention rate` in Weights & Biases (set `wandb.enable: true` in `train.json`).
 
-Checkpoints are written to `outputs/train/<date>/<time>_xarm7_hilserl/checkpoints/<step>/pretrained_model` (`last` points to the latest). To resume, run the learner with `--resume=true --config_path=<run>/checkpoints/last/pretrained_model/train_config.json`.
+Checkpoints are written to `outputs/train/<date>/<time>_xarm7_hilserl/checkpoints/<step>/pretrained_model` (`last` points to the latest), with the replay buffers in `<run>/dataset` and `<run>/dataset_offline`. To stop, press Ctrl+C once in the actor, then once in the learner, and wait: the learner saves a last checkpoint and the buffers before exiting (a second Ctrl+C skips the save).
+
+- To continue the same run (weights, optimizer and buffers), run the learner with `--resume=true --config_path=<run>/checkpoints/last/pretrained_model/train_config.json`.
+- To train new weights from the episodes collected so far, start a new run with `--buffers_path=<run>`.
 
 ### 7. Run the learned policy
 
@@ -368,7 +373,7 @@ The robot runs the policy for `eval.n_episodes` episodes, with the same resets, 
 
 - **Soft box:** every target is clipped to `end_effector_bounds`. Pushing against an edge is not a failure; the arm just stops there.
 - **Hard limits:** the Studio safety boundary, collision detection and self-collision detection stop the arm in the controller. The control box's emergency stop always works.
-- **On an xArm error** (collision, boundary, …), commands stop. The episode ends as _truncated_: it's not counted as a failure, and in record mode you can redo it with `r`. The next reset clears the error and moves home.
+- **On an xArm error** (collision, boundary, …), commands stop. The episode ends as a failure with reward `processor.reset.fault_penalty` (`-0.5` in `train.json`), so the policy learns to avoid it; in record mode you can redo it with `r`. The next reset clears the error and moves home.
 - **Random reset** (`robot.random_xy_range_m`, default 0 = off) adds a random xy offset to the home pose every episode, as `RANDOM_RESET` in rail-berkeley/hil-serl, whose tasks use 0.01–0.02 m. It makes the policy robust to where it starts; rearranging the scene during resets already provides much of that.
 
 ## Tuning and troubleshooting

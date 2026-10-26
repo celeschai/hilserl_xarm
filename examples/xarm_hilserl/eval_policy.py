@@ -46,6 +46,7 @@ from lerobot.rl.gym_manipulator import (
     make_robot_env,
     reset_and_build_transition,
     step_env_and_process_transition,
+    take_episode_end_key,
 )
 from lerobot.rl.train_rl import TrainRLServerPipelineConfig
 from lerobot.teleoperators.utils import TeleopEvents
@@ -88,6 +89,7 @@ def eval_policy(cfg: TrainRLServerPipelineConfig):
     try:
         for episode in range(cfg.eval.n_episodes):
             transition = reset_and_build_transition(env, env_processor, action_processor)
+            take_episode_end_key(teleop_device)
             episode_start = time.perf_counter()
             episode_intervened = False
             while True:

@@ -386,6 +386,11 @@ def add_actor_information_and_train(
     if cfg.dataset is not None:
         dataset_repo_id = cfg.dataset.repo_id
 
+    # Latest interaction message, for the interaction step saved with the checkpoint on shutdown.
+    last_interaction_message = None
+    # Optimization step of the last checkpoint, so shutdown does not save the same step again.
+    last_saved_step = None
+
     # NOTE: THIS IS THE MAIN LOOP OF THE LEARNER
     while True:
         # Exit the training loop if shutdown is requested
@@ -409,6 +414,8 @@ def add_actor_information_and_train(
             wandb_logger=wandb_logger,
             shutdown_event=shutdown_event,
         )
+        if interaction_message is not None:
+            last_interaction_message = interaction_message
 
         # Wait until the replay buffer has enough samples to start training
         if len(replay_buffer) < online_step_before_learning:
@@ -479,6 +486,29 @@ def add_actor_information_and_train(
                 preprocessor=preprocessor,
                 postprocessor=postprocessor,
             )
+            last_saved_step = optimization_step
+
+    # Save on shutdown too, so the transitions received since the last checkpoint are kept for a resume.
+    if saving_checkpoint and optimization_step > 0 and optimization_step != last_saved_step:
+        logging.warning(
+            "[LEARNER] Saving a checkpoint and the replay buffers before exiting, this can take a few minutes. "
+            "Do not press Ctrl+C again: it would stop the save."
+        )
+        save_training_checkpoint(
+            cfg=cfg,
+            optimization_step=optimization_step,
+            online_steps=online_steps,
+            interaction_message=last_interaction_message,
+            policy=policy,
+            optimizers=optimizers,
+            replay_buffer=replay_buffer,
+            algorithm=algorithm,
+            offline_replay_buffer=offline_replay_buffer,
+            dataset_repo_id=dataset_repo_id,
+            fps=fps,
+            preprocessor=preprocessor,
+            postprocessor=postprocessor,
+        )
 
 
 def start_learner(
@@ -628,28 +658,34 @@ def save_training_checkpoint(
 
     # TODO : temporary save replay buffer here, remove later when on the robot
     # We want to control this with the keyboard inputs
-    dataset_dir = os.path.join(cfg.output_dir, "dataset")
-    if os.path.exists(dataset_dir) and os.path.isdir(dataset_dir):
-        shutil.rmtree(dataset_dir)
-
-    # Save dataset
     # NOTE: Handle the case where the dataset repo id is not specified in the config
     # eg. RL training without demonstrations data
     repo_id_buffer_save = cfg.env.task if dataset_repo_id is None else dataset_repo_id
-    replay_buffer.to_lerobot_dataset(repo_id=repo_id_buffer_save, fps=fps, root=dataset_dir)
+    save_replay_buffer(replay_buffer, repo_id_buffer_save, fps, os.path.join(cfg.output_dir, "dataset"))
 
     if offline_replay_buffer is not None:
-        dataset_offline_dir = os.path.join(cfg.output_dir, "dataset_offline")
-        if os.path.exists(dataset_offline_dir) and os.path.isdir(dataset_offline_dir):
-            shutil.rmtree(dataset_offline_dir)
-
-        offline_replay_buffer.to_lerobot_dataset(
-            cfg.dataset.repo_id,
-            fps=fps,
-            root=dataset_offline_dir,
+        save_replay_buffer(
+            offline_replay_buffer, cfg.dataset.repo_id, fps, os.path.join(cfg.output_dir, "dataset_offline")
         )
 
     logging.info("Resume training")
+
+
+def save_replay_buffer(replay_buffer: ReplayBuffer, repo_id: str, fps: int, dataset_dir: str) -> None:
+    """Save a replay buffer as a dataset, replacing the previous save only once the new one is complete.
+
+    An interrupted save leaves the previous one in place.
+    """
+    tmp_dir, old_dir = f"{dataset_dir}.tmp", f"{dataset_dir}.old"
+    for leftover in (tmp_dir, old_dir):
+        if os.path.isdir(leftover):
+            shutil.rmtree(leftover)
+    replay_buffer.to_lerobot_dataset(repo_id=repo_id, fps=fps, root=tmp_dir)
+    if os.path.isdir(dataset_dir):
+        os.rename(dataset_dir, old_dir)
+    os.rename(tmp_dir, dataset_dir)
+    if os.path.isdir(old_dir):
+        shutil.rmtree(old_dir)
 
 
 # Training setup functions

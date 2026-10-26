@@ -16,7 +16,7 @@
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import numpy as np
@@ -367,22 +367,25 @@ class GripperPenaltyProcessorStep(ProcessorStep):
     """
     Applies a small per-transition cost on the discrete gripper action.
 
-    Fires only when the commanded action would actually transition the gripper
-    from one extreme to the other (close-while-open or open-while-closed).
-    This discourages gripper oscillation while leaving "stay" and saturating-further
-    commands unpenalized.
+    Fires on the step where the commanded gripper target flips between open and closed
+    (close-while-open or open-while-closed), following `GripperPenaltyWrapper` of rail-berkeley/hil-serl.
+    "Stay" and repeated close / open commands are not penalized.
+
+    The commanded target is compared with the previous one rather than with the measured gripper state:
+    the measured state is read after the step, when the gripper has already started moving, and a gripper
+    closed on an object stops short of fully closed, so a state check misses most open / close events.
 
     Attributes:
         penalty: The negative reward value to apply.
         max_gripper_pos: The maximum position value for the gripper, used for normalization.
-        open_threshold: Normalized state below which the gripper is considered "open".
-        closed_threshold: Normalized state above which the gripper is considered "closed".
+        threshold: Normalized gripper value above which the gripper is considered closed.
     """
 
     penalty: float = -0.02
     max_gripper_pos: float = 30.0
-    open_threshold: float = 0.1
-    closed_threshold: float = 0.9
+    threshold: float = 0.5
+
+    _last_closed: bool | None = field(default=None, init=False, repr=False)
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         """
@@ -400,37 +403,22 @@ class GripperPenaltyProcessorStep(ProcessorStep):
         if complementary_data is None:
             complementary_data = {}
 
-        raw_joint_positions = complementary_data.get("raw_joint_positions")
-        if raw_joint_positions is None:
-            return new_transition
-
-        current_gripper_pos = raw_joint_positions.get(f"{GRIPPER_KEY}.pos", None)
-        if current_gripper_pos is None:
-            return new_transition
-
-        # During reset, the transition may not carry any action yet.
+        # After a reset the transition carries no action: start from the measured gripper state.
         if action is None:
+            raw_joint_positions = complementary_data.get("raw_joint_positions") or {}
+            current_gripper_pos = raw_joint_positions.get(f"{GRIPPER_KEY}.pos", None)
+            if current_gripper_pos is not None:
+                self._last_closed = current_gripper_pos / self.max_gripper_pos > self.threshold
             return new_transition
         if isinstance(action, dict):
             raise ValueError(
                 f"GripperPenaltyProcessorStep expects a tensor or array action, got {type(action)}"
             )
 
-        # Gripper action is expected as the last action dimension.
-        gripper_action = action[-1].item()
-        gripper_action_normalized = gripper_action / self.max_gripper_pos
-
-        # Normalize gripper state and action
-        gripper_state_normalized = current_gripper_pos / self.max_gripper_pos
-
-        # Calculate penalty boolean as in original
-        #   - currently open  AND target is closed  -> close transition
-        #   - currently closed AND target is open   -> open transition
-        is_open = gripper_state_normalized < self.open_threshold
-        is_closed = gripper_state_normalized > self.closed_threshold
-        cmd_close = gripper_action_normalized > self.closed_threshold
-        cmd_open = gripper_action_normalized < self.open_threshold
-        gripper_penalty_bool = (is_open and cmd_close) or (is_closed and cmd_open)
+        # Gripper target is expected as the last action dimension.
+        cmd_closed = action[-1].item() / self.max_gripper_pos > self.threshold
+        gripper_penalty_bool = self._last_closed is not None and cmd_closed != self._last_closed
+        self._last_closed = cmd_closed
 
         gripper_penalty = self.penalty * int(gripper_penalty_bool)
 
@@ -446,19 +434,17 @@ class GripperPenaltyProcessorStep(ProcessorStep):
         Returns the configuration of the step for serialization.
 
         Returns:
-            A dictionary containing the penalty value, max gripper position,
-            and the open/closed thresholds.
+            A dictionary containing the penalty value, max gripper position and the closed threshold.
         """
         return {
             "penalty": self.penalty,
             "max_gripper_pos": self.max_gripper_pos,
-            "open_threshold": self.open_threshold,
-            "closed_threshold": self.closed_threshold,
+            "threshold": self.threshold,
         }
 
     def reset(self) -> None:
-        """Resets the processor's internal state."""
-        pass
+        """Forgets the last commanded gripper target."""
+        self._last_closed = None
 
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
@@ -662,7 +648,9 @@ class RewardClassifierProcessorStep(ProcessorStep):
         reward = new_transition.get(TransitionKey.REWARD, 0.0)
         terminated = new_transition.get(TransitionKey.DONE, False)
 
-        if math.isclose(success, 1, abs_tol=1e-2):
+        # A step where the robot faulted is a failure, whatever the classifier sees.
+        info = new_transition.get(TransitionKey.INFO) or {}
+        if math.isclose(success, 1, abs_tol=1e-2) and not info.get("robot_fault", False):
             reward = self.success_reward
             if self.terminate_on_success:
                 terminated = True

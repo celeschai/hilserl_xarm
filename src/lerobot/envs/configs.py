@@ -302,6 +302,10 @@ class ResetConfig:
     reset_time_s: float = 5.0
     control_time_s: float = 20.0
     terminate_on_success: bool = True
+    # Reward of the step where the robot controller faults (e.g. a collision), which ends the episode.
+    fault_penalty: float = 0.0
+    # Online training: episodes shorter than this many steps are not sent to the learner.
+    min_episode_steps: int = 0
 
 
 @dataclass

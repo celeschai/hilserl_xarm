@@ -19,24 +19,27 @@ Review every episode in the replay buffers of a HIL-SERL run and correct the suc
 
 The learner saves its replay buffers with every checkpoint, as `dataset/` (online) and `dataset_offline/`
 (demos + interventions) in the run's output directory, and reloads them with `--resume=true`. This tool
-shows each episode of the online buffer at its last frame (scrub to look at the rest), and you label how
-the episode ended:
+shows each episode of the online buffer at its last frame (scrub to look at the rest), with the label recorded
+during training: success if it got a reward (reward classifier or success key), else failure (failure key,
+robot fault or time limit). You confirm or correct how the episode ended:
 
 - success: the last frame gets reward 1 and ends the episode (`done`). A classifier reward elsewhere in the
   episode is set to 0.
-- failure: every reward in the episode is set to 0. `done` is kept: the episode did end there, and the replay
-  buffer takes the next stored step as the next state, which after `done` is the next episode's reset.
+- failure: every positive reward in the episode is set to 0 (a robot fault's negative reward is kept). `done`
+  is kept: the episode did end there, and the replay buffer takes the next stored step as the next state,
+  which after `done` is the next episode's reset.
 
 The same changes go to the offline buffer, where interventions are copied. Demo frames are not touched.
 
-The run is never modified. Your decisions are saved in `<run>/relabel_decisions.json` after every session,
-so you can stop with q and continue later. Once every episode is labeled (or with `--write`), the relabeled
-buffers are written to a copy of the run (`<run>_relabeled` by default) whose checkpoint config points at the
-copy. Resume from the copy. Stop the learner after a checkpoint first: later training is not in the copy.
+Episodes you skip keep their recorded label. The run is never modified. Your decisions are saved in
+`<run>/relabel_decisions.json` after every session, so you can stop with q and continue later. Once every
+episode is reviewed (or with `--write`), the relabeled buffers are written to a copy of the run
+(`<run>_relabeled` by default) whose checkpoint config points at the copy. Resume from the copy. Stop the
+learner after a checkpoint first: later training is not in the copy.
 
-Keys: Enter / y = ended in success, Backspace / n = failure, s = skip, u = previous episode,
-a / d (or the arrow keys) = one frame back / forward, A / D = 10 frames, q = save and quit,
-Esc = quit without saving this session.
+Keys: Enter / y = ended in success, Backspace / n = failure, s = skip (keep the recorded label),
+u = previous episode, a / d (or the arrow keys) = one frame back / forward, A / D = 10 frames,
+q = save and quit, Esc = quit without saving this session.
 
 Example:
 
@@ -102,6 +105,7 @@ class Episode:
     keys: list[str]  # frame keys, in order
     reward_offsets: list[int]  # frames with a reward, relative to `start`
     intervention_frames: int
+    fault: bool  # ended by a robot fault (negative reward)
 
     @property
     def key(self) -> str:
@@ -144,6 +148,7 @@ def load_episodes(dataset_dir: Path) -> list[Episode]:
                 keys=list(group["_key"]),
                 reward_offsets=[int(i) for i in np.flatnonzero(group["_reward"].to_numpy() > 0)],
                 intervention_frames=int(group["_intervention"].sum()),
+                fault=bool((group["_reward"].to_numpy() < 0).any()),
             )
         )
     return episodes
@@ -212,10 +217,17 @@ def render(dataset: LeRobotDataset, episode: Episode, offset: int, header: str) 
     return np.vstack([bar, canvas])
 
 
+def recorded_success(episode: Episode) -> bool:
+    """The label recorded during training: a reward (reward classifier or success key) means success."""
+    return bool(episode.reward_offsets)
+
+
 def describe(episode: Episode, decisions: Decisions) -> str:
-    if episode.key not in decisions:
-        return "unlabeled"
-    return "failure" if decisions[episode.key] is None else "success"
+    if episode.key in decisions:
+        return "failure" if decisions[episode.key] is None else "success"
+    if recorded_success(episode):
+        return "recorded: success"
+    return "recorded: failure (robot fault)" if episode.fault else "recorded: failure"
 
 
 def start_offset(episode: Episode, decisions: Decisions) -> int:
@@ -249,11 +261,11 @@ def review(
                 if episode.reward_offsets
                 else "no classifier reward"
             )
-            labeled = sum(e.key in decisions for e in episodes)
+            reviewed = sum(e.key in decisions for e in episodes)
             header = (
-                f"episode {position + 1}/{len(to_review)} (ep {episode.index}, {labeled}/{len(episodes)} labeled)  "
+                f"episode {position + 1}/{len(to_review)} (ep {episode.index}, {reviewed}/{len(episodes)} reviewed)  "
                 f"{classifier}  interv {episode.intervention_frames}  [{describe(episode, decisions)}]\n"
-                "Enter/y ended in success  Bksp/n failure  s skip  u back  a/d A/D scrub  q save+quit"
+                "Enter/y ended in success  Bksp/n failure  s keep recorded  u back  a/d A/D scrub  q save+quit"
             )
             cv2.imshow(window, render(dataset, episode, offset, header))
             key = cv2.waitKeyEx(0)
@@ -410,14 +422,16 @@ def main():
         default=None,
         help="Where to write the relabeled run. Defaults to `<run>_relabeled`.",
     )
-    parser.add_argument("--all", action="store_true", help="Also show the episodes already labeled.")
+    parser.add_argument("--all", action="store_true", help="Also show the episodes already reviewed.")
     parser.add_argument(
         "--successes",
         action="store_true",
-        help="Only show the episodes labeled as successes, to check them again.",
+        help="Only show the successes (reviewed, or recorded and not reviewed yet), to check them.",
     )
     parser.add_argument(
-        "--write", action="store_true", help="Write the relabeled run even if some episodes are unlabeled."
+        "--write",
+        action="store_true",
+        help="Write the relabeled run even if some episodes are not reviewed (they keep the recorded label).",
     )
     parser.add_argument(
         "--export-classifier",
@@ -448,7 +462,11 @@ def main():
         )
         return
     if args.successes:
-        to_review = [i for i, e in enumerate(episodes) if decisions.get(e.key) is not None]
+        to_review = [
+            i
+            for i, e in enumerate(episodes)
+            if decisions.get(e.key) is not None or (e.key not in decisions and recorded_success(e))
+        ]
     else:
         to_review = [i for i, e in enumerate(episodes) if args.all or e.key not in decisions]
     print(
@@ -462,16 +480,20 @@ def main():
             return
         decisions_path.write_text(json.dumps(decisions, indent=1))
 
-    labeled = [e for e in episodes if e.key in decisions]
-    successes = sum(decisions[e.key] is not None for e in labeled)
+    reviewed = [e for e in episodes if e.key in decisions]
+    successes = sum(
+        decisions[e.key] is not None if e.key in decisions else recorded_success(e) for e in episodes
+    )
+    changed = sum((decisions[e.key] is not None) != recorded_success(e) for e in reviewed)
     print(
-        f"Labeled {len(labeled)}/{len(episodes)} episodes: {successes} successes, "
-        f"{len(labeled) - successes} failures. Decisions saved to {decisions_path}."
+        f"{successes} successes, {len(episodes) - successes} failures. Reviewed {len(reviewed)}/{len(episodes)} "
+        f"episodes ({changed} changed from the recorded label); the rest keep their recorded label. "
+        f"Decisions saved to {decisions_path}."
     )
     if args.successes and not args.write:
         print("Pass --write (and a new --output-run-dir) to write a relabeled run with these labels.")
         return
-    if len(labeled) < len(episodes) and not args.write:
+    if len(reviewed) < len(episodes) and not args.write:
         print("Run again to continue, or pass --write to write the relabeled run now.")
         return
     if output_dir.exists():

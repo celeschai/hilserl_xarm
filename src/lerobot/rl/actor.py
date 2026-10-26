@@ -110,6 +110,7 @@ from .gym_manipulator import (
     make_robot_env,
     reset_and_build_transition,
     step_env_and_process_transition,
+    take_episode_end_key,
 )
 from .queue import get_last_item_from_queue
 from .train_rl import TrainRLServerPipelineConfig
@@ -287,6 +288,7 @@ def act_with_policy(
     )
 
     transition = reset_and_build_transition(online_env, env_processor, action_processor)
+    take_episode_end_key(teleop_device)
 
     # NOTE: For the moment we will solely handle the case of a single environment
     sum_reward_episode = 0
@@ -382,45 +384,71 @@ def act_with_policy(
         transition = new_transition
 
         if done or truncated:
-            logging.info(f"[ACTOR] Global step {interaction_step}: Episode reward: {sum_reward_episode}")
+            color = "\033[1;92m" if sum_reward_episode > 0 else "\033[1;91m"
+            logging.info(
+                f"{color}[EPISODE END] step {interaction_step} | reward {sum_reward_episode:+.2f} | "
+                f"last-step reward {float(reward):+.2f} | len {episode_total_steps} | "
+                f"intervention {episode_intervention_steps}/{episode_total_steps}"
+                f"{' | robot fault' if new_transition[TransitionKey.INFO].get('robot_fault') else ''}\033[0m"
+            )
 
             update_policy_parameters(algorithm=algorithm, parameters_queue=parameters_queue, device=device)
-
-            if len(list_transition_to_send_to_learner) > 0:
-                push_transitions_to_transport_queue(
-                    transitions=list_transition_to_send_to_learner,
-                    transitions_queue=transitions_queue,
-                )
-                list_transition_to_send_to_learner = []
 
             stats = get_frequency_stats(policy_timer)
             policy_timer.reset()
 
-            # Calculate intervention rate
-            intervention_rate = 0.0
-            if episode_total_steps > 0:
-                intervention_rate = episode_intervention_steps / episode_total_steps
-
-            # Send episodic reward to the learner
-            interactions_queue.put(
-                python_object_to_bytes(
-                    {
-                        "Episodic reward": sum_reward_episode,
-                        "Interaction step": interaction_step,
-                        "Episode intervention": int(episode_intervention),
-                        "Intervention rate": intervention_rate,
-                        **stats,
-                    }
+            # The episode is sent after the reset: Enter / Backspace pressed after it ended (e.g. by the reward
+            # classifier), up to the end of the reset, relabels it.
+            transition = reset_and_build_transition(online_env, env_processor, action_processor)
+            episode_transitions, list_transition_to_send_to_learner = list_transition_to_send_to_learner, []
+            key = take_episode_end_key(teleop_device)
+            if key in (TeleopEvents.SUCCESS, TeleopEvents.FAILURE) and episode_transitions:
+                sum_reward_episode = relabel_episode(episode_transitions, success=key == TeleopEvents.SUCCESS)
+                color = "\033[1;92m" if sum_reward_episode > 0 else "\033[1;91m"
+                logging.info(
+                    f"{color}[EPISODE RELABEL] {key.value} pressed after the episode ended | "
+                    f"reward {sum_reward_episode:+.2f}\033[0m"
                 )
-            )
 
-            # Reset intervention counters and environment
+            reset_cfg = cfg.env.processor.reset
+            min_episode_steps = reset_cfg.min_episode_steps if reset_cfg is not None else 0
+            if episode_total_steps < min_episode_steps:
+                logging.info(
+                    f"\033[1;93m[EPISODE DISCARDED] len {episode_total_steps} < {min_episode_steps}, "
+                    "not sent to the learner\033[0m"
+                )
+            else:
+                if episode_transitions:
+                    push_transitions_to_transport_queue(
+                        transitions=episode_transitions,
+                        transitions_queue=transitions_queue,
+                    )
+
+                # Calculate intervention rate
+                intervention_rate = 0.0
+                if episode_total_steps > 0:
+                    intervention_rate = episode_intervention_steps / episode_total_steps
+
+                # Send episodic reward to the learner
+                interactions_queue.put(
+                    python_object_to_bytes(
+                        {
+                            "Episodic reward": sum_reward_episode,
+                            "Interaction step": interaction_step,
+                            "Episode intervention": int(episode_intervention),
+                            "Intervention rate": intervention_rate,
+                            **stats,
+                        }
+                    )
+                )
+
+            # Reset intervention counters
             sum_reward_episode = 0.0
             episode_intervention = False
             episode_intervention_steps = 0
             episode_total_steps = 0
 
-            transition = reset_and_build_transition(online_env, env_processor, action_processor)
+            logging.info(f"\033[1;96m[EPISODE START] step {interaction_step + 1}\033[0m")
 
         if cfg.env.fps is not None:
             dt_time = time.perf_counter() - start_time
@@ -715,6 +743,22 @@ def update_policy_parameters(algorithm: RLAlgorithm, parameters_queue: Queue, de
 
 
 #  Utilities functions
+
+
+def relabel_episode(transitions: list[Transition], success: bool) -> float:
+    """
+    Set how an episode ended, as the success / failure keys do during the episode: a success gets reward 1 on
+    its last step, a failure loses its success rewards (a robot fault's negative reward is kept). Either way
+    the episode ends there (`done`). Returns the new episode reward.
+    """
+    for t in transitions:
+        if float(t["reward"]) > 0:
+            t["reward"] = 0.0
+    if success:
+        transitions[-1]["reward"] = 1.0
+    transitions[-1]["done"] = True
+    transitions[-1]["truncated"] = False
+    return sum(float(t["reward"]) for t in transitions)
 
 
 def push_transitions_to_transport_queue(transitions: list, transitions_queue):

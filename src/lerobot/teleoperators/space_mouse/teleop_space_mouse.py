@@ -284,6 +284,23 @@ class SpaceMouseTeleop(Teleoperator):
             TeleopEvents.RERECORD_EPISODE: rerecord_episode,
         }
 
+    def reset_episode_events(self) -> TeleopEvents | None:
+        """
+        Start a new episode with the policy in control and no pending end-of-episode key.
+
+        A key pressed after the previous episode already ended (e.g. by the reward classifier) or during the
+        reset would otherwise end the new episode on its first step.
+
+        Returns:
+            The end-of-episode key pressed since the previous episode ended, if any, so the caller can apply
+            it to that episode.
+        """
+        with self._events_lock:
+            status = self._episode_end_status
+            self._episode_end_status = None
+            self._is_intervention = False
+        return status
+
     @check_if_not_connected
     def disconnect(self) -> None:
         self._stop_event.set()
