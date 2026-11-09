@@ -210,3 +210,47 @@ def test_interactions_stream():
     for i, message in enumerate(streamed_data):
         deserialized_interaction = bytes_to_python_object(message.data)
         assert deserialized_interaction == test_interactions[i]
+
+
+def _episode(rewards: list[float]) -> list[Transition]:
+    return [
+        Transition(
+            state={"state": torch.zeros(2)},
+            action=torch.zeros(3),
+            reward=reward,
+            done=False,
+            truncated=i == len(rewards) - 1,
+            next_state={"state": torch.zeros(2)},
+            complementary_info={},
+        )
+        for i, reward in enumerate(rewards)
+    ]
+
+
+@skip_if_package_missing("grpcio", "grpc")
+def test_pending_episode_relabel_and_send():
+    from lerobot.rl.actor import PendingEpisode
+    from lerobot.teleoperators.utils import TeleopEvents
+    from lerobot.transport.utils import bytes_to_python_object, bytes_to_transitions
+
+    pending = PendingEpisode(transitions=_episode([0.0, 0.0, 0.0]), info={"Episodic reward": 0.0})
+
+    # No key, or a key that is not a label, leaves the episode as it is.
+    pending.relabel(None, steps_into_next=0)
+    pending.relabel(TeleopEvents.RERECORD_EPISODE, steps_into_next=0)
+    assert [t["reward"] for t in pending.transitions] == [0.0, 0.0, 0.0]
+
+    pending.relabel(TeleopEvents.SUCCESS, steps_into_next=None)
+    assert [t["reward"] for t in pending.transitions] == [0.0, 0.0, 1.0]
+    assert pending.transitions[-1]["done"] and not pending.transitions[-1]["truncated"]
+    assert pending.info["Episodic reward"] == 1.0
+
+    # A later key in the window overrides the earlier one.
+    pending.relabel(TeleopEvents.FAILURE, steps_into_next=3)
+    assert [t["reward"] for t in pending.transitions] == [0.0, 0.0, 0.0]
+    assert pending.info["Episodic reward"] == 0.0
+
+    transitions_queue, interactions_queue = Queue(), Queue()
+    pending.send(transitions_queue, interactions_queue)
+    assert len(bytes_to_transitions(transitions_queue.get(timeout=1))) == 3
+    assert bytes_to_python_object(interactions_queue.get(timeout=1)) == {"Episodic reward": 0.0}

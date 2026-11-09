@@ -50,6 +50,7 @@ import logging
 import os
 import time
 from collections.abc import Generator
+from dataclasses import dataclass, field
 from functools import lru_cache
 from queue import Empty
 from typing import TYPE_CHECKING, Any
@@ -111,6 +112,7 @@ from .gym_manipulator import (
     reset_and_build_transition,
     step_env_and_process_transition,
     take_episode_end_key,
+    take_episode_label_key,
 )
 from .queue import get_last_item_from_queue
 from .train_rl import TrainRLServerPipelineConfig
@@ -300,10 +302,18 @@ def act_with_policy(
 
     policy_timer = TimerManager("Policy inference", log=False)
 
+    reset_cfg = cfg.env.processor.reset
+    min_episode_steps = reset_cfg.min_episode_steps if reset_cfg is not None else 0
+    # The last episode is held back until the new one has run `min_episode_steps` steps, so that Enter /
+    # Backspace pressed until then (after the reset too) relabel it instead of ending the new episode.
+    pending_episode: PendingEpisode | None = None
+
     for interaction_step in range(cfg.policy.online_steps):
         start_time = time.perf_counter()
         if shutdown_event.is_set():
             logging.info("[ACTOR] Shutting down act_with_policy")
+            if pending_episode is not None:
+                pending_episode.send(transitions_queue, interactions_queue)
             return
 
         observation = {
@@ -326,6 +336,16 @@ def act_with_policy(
         policy_fps = policy_timer.fps_last
 
         log_policy_frequency_issue(policy_fps=policy_fps, cfg=cfg, interaction_step=interaction_step)
+
+        # Right before the step, so a key pressed in the window does not reach the env processor and end the
+        # new episode.
+        if pending_episode is not None:
+            pending_episode.relabel(
+                take_episode_label_key(teleop_device), steps_into_next=episode_total_steps
+            )
+            if episode_total_steps >= min_episode_steps:
+                pending_episode.send(transitions_queue, interactions_queue)
+                pending_episode = None
 
         # Use the new step function
         new_transition = step_env_and_process_transition(
@@ -397,50 +417,34 @@ def act_with_policy(
             stats = get_frequency_stats(policy_timer)
             policy_timer.reset()
 
-            # The episode is sent after the reset: Enter / Backspace pressed after it ended (e.g. by the reward
-            # classifier), up to the end of the reset, relabels it.
+            if pending_episode is not None:
+                # The new episode ended within the relabel window of the previous one.
+                pending_episode.send(transitions_queue, interactions_queue)
+                pending_episode = None
+
             transition = reset_and_build_transition(online_env, env_processor, action_processor)
             episode_transitions, list_transition_to_send_to_learner = list_transition_to_send_to_learner, []
+            # Enter / Backspace pressed after the episode ended (e.g. by the reward classifier) relabel it.
             key = take_episode_end_key(teleop_device)
-            if key in (TeleopEvents.SUCCESS, TeleopEvents.FAILURE) and episode_transitions:
-                sum_reward_episode = relabel_episode(episode_transitions, success=key == TeleopEvents.SUCCESS)
-                color = "\033[1;92m" if sum_reward_episode > 0 else "\033[1;91m"
-                logging.info(
-                    f"{color}[EPISODE RELABEL] {key.value} pressed after the episode ended | "
-                    f"reward {sum_reward_episode:+.2f}\033[0m"
-                )
 
-            reset_cfg = cfg.env.processor.reset
-            min_episode_steps = reset_cfg.min_episode_steps if reset_cfg is not None else 0
             if episode_total_steps < min_episode_steps:
                 logging.info(
                     f"\033[1;93m[EPISODE DISCARDED] len {episode_total_steps} < {min_episode_steps}, "
                     "not sent to the learner\033[0m"
                 )
             else:
-                if episode_transitions:
-                    push_transitions_to_transport_queue(
-                        transitions=episode_transitions,
-                        transitions_queue=transitions_queue,
-                    )
-
-                # Calculate intervention rate
-                intervention_rate = 0.0
-                if episode_total_steps > 0:
-                    intervention_rate = episode_intervention_steps / episode_total_steps
-
-                # Send episodic reward to the learner
-                interactions_queue.put(
-                    python_object_to_bytes(
-                        {
-                            "Episodic reward": sum_reward_episode,
-                            "Interaction step": interaction_step,
-                            "Episode intervention": int(episode_intervention),
-                            "Intervention rate": intervention_rate,
-                            **stats,
-                        }
-                    )
+                pending_episode = PendingEpisode(
+                    transitions=episode_transitions,
+                    info={
+                        "Episodic reward": sum_reward_episode,
+                        "Interaction step": interaction_step,
+                        "Episode intervention": int(episode_intervention),
+                        "Intervention rate": episode_intervention_steps / episode_total_steps,
+                        **stats,
+                    },
                 )
+                if key in (TeleopEvents.SUCCESS, TeleopEvents.FAILURE):
+                    pending_episode.relabel(key, steps_into_next=None)
 
             # Reset intervention counters
             sum_reward_episode = 0.0
@@ -453,6 +457,9 @@ def act_with_policy(
         if cfg.env.fps is not None:
             dt_time = time.perf_counter() - start_time
             precise_sleep(max(1 / cfg.env.fps - dt_time, 0.0))
+
+    if pending_episode is not None:
+        pending_episode.send(transitions_queue, interactions_queue)
 
 
 #  Communication Functions - Group all gRPC/messaging functions
@@ -743,6 +750,44 @@ def update_policy_parameters(algorithm: RLAlgorithm, parameters_queue: Queue, de
 
 
 #  Utilities functions
+
+
+@dataclass
+class PendingEpisode:
+    """A finished episode held back from the learner while it can still be relabeled."""
+
+    transitions: list[Transition]
+    # Episode statistics sent to the learner along with it.
+    info: dict[str, Any] = field(default_factory=dict)
+
+    def relabel(self, key: TeleopEvents | None, steps_into_next: int | None) -> None:
+        """
+        Relabel the episode as a success / failure if `key` is one of those keys, else do nothing.
+
+        Args:
+            key: The end-of-episode key pressed, if any.
+            steps_into_next: Steps the next episode had run when the key was taken, for the log (None during
+                the reset).
+        """
+        if key not in (TeleopEvents.SUCCESS, TeleopEvents.FAILURE):
+            return
+        reward = relabel_episode(self.transitions, success=key == TeleopEvents.SUCCESS)
+        self.info["Episodic reward"] = reward
+        when = (
+            "during the reset"
+            if steps_into_next is None
+            else f"{steps_into_next} steps into the next episode"
+        )
+        color = "\033[1;92m" if reward > 0 else "\033[1;91m"
+        logging.info(
+            f"{color}[EPISODE RELABEL] {key.value} pressed {when}: previous episode relabeled | "
+            f"reward {reward:+.2f}\033[0m"
+        )
+
+    def send(self, transitions_queue: Queue, interactions_queue: Queue) -> None:
+        """Send the episode's transitions and statistics to the learner."""
+        push_transitions_to_transport_queue(transitions=self.transitions, transitions_queue=transitions_queue)
+        interactions_queue.put(python_object_to_bytes(self.info))
 
 
 def relabel_episode(transitions: list[Transition], success: bool) -> float:

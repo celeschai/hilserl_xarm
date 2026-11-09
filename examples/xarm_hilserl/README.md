@@ -71,8 +71,8 @@ Code involved:
 | UFACTORY Six-axis F/T sensor (between flange and gripper)            | Tool bus, through the xArm SDK    | `xarm-python-sdk` | Force / torque state, admittance (compliance) control                         |
 | xArm Gripper                                                         | Tool Modbus, through the xArm SDK | `xarm-python-sdk` | Open / close, opening read-back                                               |
 | 3Dconnexion SpaceMouse Compact                                       | USB HID (`/dev/hidraw*`)          | `pyspacemouse`    | Arm xyz + rotation + gripper buttons                                          |
-| Intel RealSense D435i, on the wrist (serial `134322070906`)          | USB 3                             | `pyrealsense2`    | `wrist` image: close view of the gripper and object (RGB, depth not used)     |
-| Intel RealSense D405, fixed beside the table (serial `261122273645`) | USB 3                             | `pyrealsense2`    | `side` image: the whole scene, so the object is visible wherever it is placed |
+| Intel RealSense D405, on the wrist (serial `261122273645`)           | USB 3 (USB 2 is enough at 640×480 @ 30 fps) | `pyrealsense2` | `wrist` image: close view of the gripper and object (RGB, depth not used) |
+| Intel RealSense D435, fixed in front of the table (serial `263522074909`) | USB 3                        | `pyrealsense2`    | `front` image: the whole scene, so the object is visible wherever it is placed |
 | Keyboard                                                             | X11 session                       | `pynput`          | Intervention, success / failure, re-record                                    |
 | GPU                                                                  | CUDA                              | PyTorch           | Learner (SAC updates) and actor (policy inference)                            |
 
@@ -167,17 +167,18 @@ The robot / workspace values live in both `env.json` and `train.json` (one confi
 
 ```bash
 uv run python examples/xarm_hilserl/teleoperate.py \
-    --robot.cameras='{wrist: {type: intelrealsense, serial_number_or_name: "134322070906", width: 640, height: 480, fps: 30}}' \
-    --home_joints_deg='[62, -19.8, 42, 40.1, 18.5, 54.2, 1.6]' \
-    --teleop.use_rotation=true --robot.use_ft_sensor=true --robot.use_admittance=true \
+    --robot.cameras='{wrist: {type: intelrealsense, serial_number_or_name: "261122273645", width: 640, height: 480, fps: 30}, front: {type: intelrealsense, serial_number_or_name: "263522074909", width: 640, height: 480, fps: 30}}' \
+    --robot.max_linear_speed_mm_s=100 \
+    --robot.use_ft_sensor=true --robot.use_admittance=true \
+    --teleop.use_rotation=true \
     --end_effector_rot_step=0.06 \
-    --reference_clip='{min: [-0.01, -0.01, -0.01, -0.05, -0.05, -0.05], max: [0.01, 0.01, 0.01, 0.05, 0.05, 0.05]}' \
-    --write_configs=true \
-    --display_data=true 
+    --reference_clip='{min: [-0.01, -0.01, -0.005, -0.06, -0.06, -0.06], max: [0.01, 0.01, 0.005, 0.06, 0.06, 0.06]}' \
+    --display_data=true \
+    --write_configs=true
 
 ```
 
-The arm first moves to `--home_joints_deg` (here UFACTORY's ready pose; omit it to start where the arm is). A status line shows the live TCP and the min/max visited so far. The arm only moves while you push the puck, inside a ±30 cm box around the start pose (`--box_m`, or an explicit `--end_effector_bounds`). Add `--display_data=true` to see the wrist camera and TCP in Rerun.
+The arm first moves to `--home_joints_deg` (here UFACTORY's ready pose; omit it to start where the arm is). A status line shows the live TCP and the min/max visited so far. The arm only moves while you push the puck, inside a ±30 cm box around the start pose (`--box_m`, or an explicit `--end_effector_bounds`). With `--display_data=true`, Rerun shows the cameras passed in `--robot.cameras` (wrist and front here) and the TCP live.
 
 To try contacts as they will behave in HIL-SERL, add `--robot.use_admittance=true` and the same `--reference_clip` as in the configs, e.g. `--reference_clip='{min: [-0.01, -0.01, -0.01, -0.05, -0.05, -0.05], max: [0.01, 0.01, 0.01, 0.05, 0.05, 0.05]}'`. The arm then gives way when it is pushed or blocked, and the status line shows the force. The F/T sensor is zeroed at the start pose, so don't touch the gripper while the script starts.
 
@@ -293,7 +294,7 @@ It shows the first frame of each camera in turn. Draw a rectangle and press `c` 
 **Option B: type the boxes (no window).** For example, full frame for both cameras:
 
 ```bash
-echo '{"observation.images.wrist": [0, 0, 480, 640], "observation.images.side": [0, 0, 480, 640]}' > /tmp/crop.json
+echo '{"observation.images.wrist": [0, 0, 480, 640], "observation.images.front": [0, 0, 480, 640]}' > /tmp/crop.json
 uv run python -m lerobot.rl.crop_dataset_roi --repo-id local/xarm7_hilserl_demos_6dof_ft --crop-params-path /tmp/crop.json
 ```
 

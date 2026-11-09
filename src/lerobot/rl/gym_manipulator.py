@@ -83,6 +83,7 @@ from lerobot.teleoperators.teleoperator import Teleoperator
 from lerobot.teleoperators.utils import TeleopEvents
 from lerobot.utils.constants import ACTION, DONE, OBS_IMAGES, OBS_STATE, REWARD
 from lerobot.utils.import_utils import require_package
+from lerobot.utils.rerun_visualization import init_rerun, log_rerun_data, shutdown_rerun
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging, log_say
 
@@ -147,7 +148,7 @@ class RobotEnv(gym.Env):
         Args:
             robot: Robot interface for hardware communication.
             use_gripper: Whether to include gripper in action space.
-            display_cameras: Whether to show camera feeds during execution.
+            display_cameras: Whether to stream the camera feeds live to a Rerun viewer (spawned on start).
             reset_pose: Joint positions for environment reset.
             reset_time_s: Time to wait during reset.
             control_period_s: If set, `step` waits after sending the action until this long has passed since
@@ -160,6 +161,8 @@ class RobotEnv(gym.Env):
 
         self.robot = robot
         self.display_cameras = display_cameras
+        if self.display_cameras:
+            init_rerun(session_name="hilserl_robot_env")
 
         # Connect to the robot if not already connected.
         if not self.robot.is_connected:
@@ -280,6 +283,8 @@ class RobotEnv(gym.Env):
         self.episode_data = None
         obs = self._get_observation()
         self._raw_joint_positions = {key: obs[key] for key in self._state_keys}
+        if self.display_cameras:
+            self.render(obs)
         return obs, {TeleopEvents.IS_INTERVENTION: False}
 
     def step(self, action) -> tuple[RobotObservation, float, bool, bool, dict[str, Any]]:
@@ -298,7 +303,7 @@ class RobotEnv(gym.Env):
         self._raw_joint_positions = {key: obs[key] for key in self._state_keys}
 
         if self.display_cameras:
-            self.render()
+            self.render(obs)
 
         self.current_step += 1
 
@@ -325,22 +330,22 @@ class RobotEnv(gym.Env):
             info,
         )
 
-    def render(self) -> None:
-        """Display robot camera feeds."""
-        import cv2
+    def render(self, observation: RobotObservation | None = None) -> None:
+        """Stream the robot camera feeds to the Rerun viewer, one view per camera.
 
-        current_observation = self._get_observation()
-        if current_observation is not None:
-            image_keys = [key for key in current_observation if "image" in key]
-
-            for key in image_keys:
-                cv2.imshow(key, cv2.cvtColor(current_observation[key].numpy(), cv2.COLOR_RGB2BGR))
-                cv2.waitKey(1)
+        Args:
+            observation: An observation from `_get_observation`. Read from the robot when not given.
+        """
+        if observation is None:
+            observation = self._get_observation()
+        log_rerun_data(observation={f"{OBS_IMAGES}.{key}": img for key, img in observation["pixels"].items()})
 
     def close(self) -> None:
         """Close environment and disconnect robot."""
         if self.robot.is_connected:
             self.robot.disconnect()
+        if self.display_cameras:
+            shutdown_rerun()
 
     def get_raw_joint_positions(self) -> dict[str, float]:
         """Get raw joint positions."""
@@ -694,6 +699,15 @@ def take_episode_end_key(teleop_device: Teleoperator | None) -> TeleopEvents | N
     """
     reset_episode_events = getattr(teleop_device, "reset_episode_events", None)
     return reset_episode_events() if reset_episode_events is not None else None
+
+
+def take_episode_label_key(teleop_device: Teleoperator | None) -> TeleopEvents | None:
+    """
+    Success / failure key pressed since the last call, taken so it does not end the current episode (the
+    intervention latch and a re-record key are left alone). None for devices without such keys.
+    """
+    take_episode_label = getattr(teleop_device, "take_episode_label", None)
+    return take_episode_label() if take_episode_label is not None else None
 
 
 def reset_and_build_transition(

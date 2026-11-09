@@ -10,7 +10,7 @@
     "type": "reward_classifier",
     "model_name": "lerobot/resnet10",
     "model_type": "cnn",
-    "num_cameras": 3,
+    "num_cameras": 2,
     "num_classes": 2,
     "hidden_dim": 256,
     "dropout_rate": 0.1,
@@ -18,14 +18,6 @@
     "device": "cuda",
     "input_features": {
       "observation.images.wrist": {
-        "type": "VISUAL",
-        "shape": [
-          3,
-          128,
-          128
-        ]
-      },
-      "observation.images.side": {
         "type": "VISUAL",
         "shape": [
           3,
@@ -56,6 +48,6 @@
     "enable": false,
     "project": "xarm7-reward-classifier"
   },
-  "output_dir": "outputs/train/xarm7_reward_classifier_v5",
+  "output_dir": "outputs/train/xarm7_reward_classifier",
   "job_name": "xarm7_reward_classifier_v5"
 }

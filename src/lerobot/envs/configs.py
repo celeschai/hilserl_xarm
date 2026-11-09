@@ -304,7 +304,8 @@ class ResetConfig:
     terminate_on_success: bool = True
     # Reward of the step where the robot controller faults (e.g. a collision), which ends the episode.
     fault_penalty: float = 0.0
-    # Online training: episodes shorter than this many steps are not sent to the learner.
+    # Online training: episodes shorter than this many steps are not sent to the learner. An episode can be
+    # relabeled (Enter / Backspace) until the next one has run this many steps.
     min_episode_steps: int = 0
 
 

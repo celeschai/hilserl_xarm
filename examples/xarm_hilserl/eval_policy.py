@@ -73,6 +73,9 @@ def select_action(
 @parser.wrap()
 def eval_policy(cfg: TrainRLServerPipelineConfig):
     init_logging()
+    # Loads the checkpoint config from `--policy.path` (as the actor and learner do), with the `policy`
+    # values of `--config_path` on top, and sets `policy.pretrained_path`.
+    cfg.validate()
     if cfg.policy.pretrained_path is None:
         raise ValueError(
             "Pass the checkpoint to evaluate with `--policy.path=<checkpoint>/pretrained_model`."

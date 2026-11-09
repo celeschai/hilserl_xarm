@@ -41,6 +41,21 @@ Keys: Enter / y = ended in success, Backspace / n = failure, s = skip (keep the 
 u = previous episode, a / d (or the arrow keys) = one frame back / forward, A / D = 10 frames,
 q = save and quit, Esc = quit without saving this session.
 
+With `--dataset <repo_id>` it reviews a recorded demo dataset instead, where a success's reward is latched
+from the first success frame to the end of the episode. Per episode you can:
+
+- Enter / y: success from the frame shown (reward 1 from it to the end), e.g. a success the key press missed.
+- Backspace / n: failure (positive rewards cleared).
+- t: cut the episode after the frame shown, e.g. to drop frames with a hand in view at the end. t on the
+  last frame undoes the cut.
+- x: delete the episode (x again to keep it). `--delete` marks episodes for deletion up front.
+- s: next episode, keeping the label shown.
+
+Episodes are shown with their dataset index and the number the recorder logged ("Saving episode N as dataset
+episode_index N-1"). Decisions are saved in `outputs/demo_review/<dataset>_decisions.json`; once every episode
+is reviewed (or with `--write`), the result is written to a new dataset (`<repo_id>_reviewed` by default).
+The source dataset is not modified.
+
 Example:
 
 ```shell
@@ -48,6 +63,9 @@ uv run --with "opencv-python>=4.12,<4.14" python examples/xarm_hilserl/relabel_b
     --run-dir outputs/train/2026-10-19/17-34-24_xarm7_hilserl
 uv run python -m lerobot.rl.learner --config_path examples/xarm_hilserl/configs/train.json \
     --output_dir=outputs/train/2026-10-19/17-34-24_xarm7_hilserl_relabeled --resume=true
+
+uv run --with "opencv-python>=4.12,<4.14" python examples/xarm_hilserl/relabel_buffer_rewards.py \
+    --dataset local/xarm7_hilserl_demos_6dof_ft --delete 10 11 12
 ```
 """
 
@@ -57,6 +75,7 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Imported before lerobot: creating an OpenCV (Qt) window hangs if lerobot's dependencies are loaded first.
 import cv2
@@ -200,22 +219,42 @@ def to_bgr(image) -> np.ndarray:
     return cv2.resize(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), (TILE_SIZE, TILE_SIZE))
 
 
-def render(dataset: LeRobotDataset, episode: Episode, offset: int, header: str) -> np.ndarray:
-    """The cameras side by side at frame `offset` of the episode."""
+def render(
+    dataset: LeRobotDataset, episode: Episode, offset: int, header: str, note: str | None = None
+) -> np.ndarray:
+    """The cameras side by side at frame `offset` of the episode, labeled with `note` (default: its reward)."""
     frame = dataset[episode.start + offset]
     canvas = np.hstack([to_bgr(frame[key]) for key in CAMERA_KEYS if key in frame])
     label = f"frame {offset}/{len(episode) - 1}"
-    if offset in episode.reward_offsets:
+    if note is not None:
+        label += note
+    elif offset in episode.reward_offsets:
         label += " (classifier reward)"
     if offset == len(episode) - 1:
         label += " (last)"
     cv2.putText(canvas, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
-    bar = np.zeros((60, canvas.shape[1], 3), dtype=np.uint8)
-    for i, line in enumerate(header.split("\n")):
+    lines = header.split("\n")
+    bar = np.zeros((max(60, 12 + 26 * len(lines)), canvas.shape[1], 3), dtype=np.uint8)
+    for i, line in enumerate(lines):
         cv2.putText(
             bar, line, (6, 22 + 26 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA
         )
     return np.vstack([bar, canvas])
+
+
+def wait_key(window: str) -> int:
+    """The next key pressed in `window`, or q once the window is closed.
+
+    `cv2.waitKeyEx(0)` returns at once after the window is closed, and the next `imshow` opens it again, so a
+    closed window would keep popping back up.
+    """
+    while True:
+        key = cv2.waitKeyEx(100)
+        if key != -1:
+            return key
+        if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+            print("Window closed: saving and quitting.")
+            return ord("q")
 
 
 def recorded_success(episode: Episode) -> bool:
@@ -269,7 +308,7 @@ def review(
                 "Enter/y ended in success  Bksp/n failure  s keep recorded  u back  a/d A/D scrub  q save+quit"
             )
             cv2.imshow(window, render(dataset, episode, offset, header))
-            key = cv2.waitKeyEx(0)
+            key = wait_key(window)
             if key in KEY_ENTER or key == ord("y"):
                 decisions[episode.key] = episode.keys[-1]
             elif key in KEY_BACKSPACE or key == ord("n"):
@@ -416,9 +455,250 @@ def export_classifier_dataset(
     return sorted(held_out)
 
 
+DEMO_DECISIONS_DIR = Path("outputs/demo_review")
+KEY_CUT = ord("t")
+KEY_DELETE = ord("x")
+
+# Per demo episode, keyed by its index (the source dataset is never modified): "label" is "recorded" (keep the
+# recorded rewards), "success" (from frame "success" to the end) or "failure"; "last" is the last frame kept
+# (None keeps them all); "delete" drops the episode.
+DemoDecision = dict[str, Any]
+
+
+def default_demo_decision(delete: bool = False) -> DemoDecision:
+    return {"label": "recorded", "success": None, "last": None, "delete": delete}
+
+
+def demo_decision(
+    episode: Episode, decisions: dict[str, DemoDecision], pending_delete: set[int]
+) -> DemoDecision:
+    decision = decisions.get(str(episode.index))
+    return dict(decision) if decision else default_demo_decision(episode.index in pending_delete)
+
+
+def first_success(episode: Episode, decision: DemoDecision) -> int | None:
+    if decision["label"] == "success":
+        return decision["success"]
+    if decision["label"] == "recorded" and episode.reward_offsets:
+        return episode.reward_offsets[0]
+    return None
+
+
+def describe_demo(episode: Episode, decision: DemoDecision) -> str:
+    if decision["delete"]:
+        return "DELETE"
+    success = first_success(episode, decision)
+    prefix = "recorded: " if decision["label"] == "recorded" else ""
+    text = prefix + (f"success from frame {success}" if success is not None else "failure")
+    if decision["last"] is not None:
+        text += f", cut after frame {decision['last']}"
+    return text
+
+
+def demo_frame_note(episode: Episode, decision: DemoDecision, offset: int) -> str:
+    if decision["last"] is not None and offset > decision["last"]:
+        return " (cut)"
+    if decision["label"] == "success":
+        return " (success)" if offset >= decision["success"] else ""
+    if decision["label"] == "recorded" and offset in episode.reward_offsets:
+        return " (reward)"
+    return ""
+
+
+def review_demos(
+    dataset: LeRobotDataset,
+    episodes: list[Episode],
+    to_review: list[int],
+    decisions: dict[str, DemoDecision],
+    pending_delete: set[int],
+) -> bool:
+    """Review the demo episodes at the positions `to_review` into `decisions`. Returns False to quit without saving."""
+    window = "review demos"
+    cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
+    cv2.moveWindow(window, 100, 100)
+    with contextlib.suppress(cv2.error):
+        cv2.setWindowProperty(window, cv2.WND_PROP_TOPMOST, 1)
+    print(
+        f"Opened the '{window}' window (it may be behind other windows: use Alt+Tab). "
+        "Click it so it gets the key presses."
+    )
+    position = 0
+    offset: int | None = None
+    decision = default_demo_decision()
+    message = ""
+    try:
+        while position < len(to_review):
+            episode = episodes[to_review[position]]
+            if offset is None:
+                offset = len(episode) - 1
+                decision = demo_decision(episode, decisions, pending_delete)
+            reviewed = sum(str(e.index) in decisions for e in episodes)
+            header = (
+                f"{position + 1}/{len(to_review)}  ep {episode.index} (logged as episode {episode.index + 1})  "
+                f"{reviewed}/{len(episodes)} reviewed\n"
+                f"[{describe_demo(episode, decision)}]  {message}\n"
+                "Enter/y success from here  Bksp/n failure  s next\n"
+                "t cut after here  x delete  u back  a/d A/D scrub  q quit"
+            )
+            message = ""
+            note = demo_frame_note(episode, decision, offset)
+            cv2.imshow(window, render(dataset, episode, offset, header, note))
+            key = wait_key(window)
+            if key in KEY_ENTER or key == ord("y"):
+                if decision["last"] is not None and offset > decision["last"]:
+                    message = "this frame is cut"
+                    continue
+                decision.update(label="success", success=offset, delete=False)
+            elif key in KEY_BACKSPACE or key == ord("n"):
+                decision.update(label="failure", success=None, delete=False)
+            elif key == ord("s"):
+                pass
+            elif key == KEY_CUT:
+                success = first_success(episode, decision)
+                if success is not None and offset < success:
+                    message = "the cut drops the success: mark it earlier first"
+                else:
+                    decision["last"] = offset if offset < len(episode) - 1 else None
+                continue
+            elif key == KEY_DELETE:
+                decision["delete"] = not decision["delete"]
+                if not decision["delete"]:
+                    continue
+            elif key == ord("u"):
+                position, offset = max(position - 1, 0), None
+                continue
+            elif key in KEY_LEFT or key in KEY_RIGHT or key in KEY_LEFT_10 or key in KEY_RIGHT_10:
+                step = 10 if key in KEY_LEFT_10 or key in KEY_RIGHT_10 else 1
+                step = -step if key in KEY_LEFT or key in KEY_LEFT_10 else step
+                offset = int(np.clip(offset + step, 0, len(episode) - 1))
+                continue
+            elif key == ord("q"):
+                return True
+            elif key == KEY_ESC:
+                return False
+            else:
+                continue
+            decisions[str(episode.index)] = decision
+            position, offset = position + 1, None
+        return True
+    finally:
+        cv2.destroyAllWindows()
+
+
+def write_reviewed_demos(
+    source: LeRobotDataset,
+    episodes: list[Episode],
+    decisions: dict[str, DemoDecision],
+    pending_delete: set[int],
+    repo_id: str,
+    root: Path | None = None,
+) -> LeRobotDataset:
+    """Write the kept episodes of `source`, cut and relabeled, to a new dataset."""
+    features = {k: v for k, v in source.meta.features.items() if k not in DEFAULT_FEATURES}
+    dataset = LeRobotDataset.create(
+        repo_id,
+        fps=source.meta.fps,
+        features=features,
+        root=root,
+        robot_type=source.meta.robot_type,
+        use_videos=True,
+    )
+    for episode in episodes:
+        decision = demo_decision(episode, decisions, pending_delete)
+        if decision["delete"]:
+            print(f"episode {episode.index:3d}: deleted")
+            continue
+        length = len(episode) if decision["last"] is None else decision["last"] + 1
+        for offset in range(length):
+            frame = source[episode.start + offset]
+            reward = float(frame[REWARD])
+            if decision["label"] == "success":
+                reward = float(offset >= decision["success"])
+            elif decision["label"] == "failure":
+                reward = min(reward, 0.0)  # keep a robot fault's negative reward
+            dataset.add_frame(
+                {
+                    **{
+                        k: frame[k].reshape(tuple(features[k]["shape"]))
+                        for k in features
+                        if k not in (REWARD, DONE)
+                    },
+                    REWARD: torch.tensor([reward], dtype=torch.float32),
+                    DONE: torch.tensor([offset == length - 1]),
+                    "task": frame["task"],
+                }
+            )
+        dataset.save_episode()
+        print(
+            f"episode {episode.index:3d} -> {dataset.meta.total_episodes - 1:3d}: {length}/{len(episode)} frames, "
+            f"{describe_demo(episode, decision)}"
+        )
+    dataset.finalize()
+    return dataset
+
+
+def main_demos(repo_id: str, new_repo_id: str | None, pending_delete: set[int], show_all: bool, write: bool):
+    root = HF_LEROBOT_HOME / repo_id
+    new_repo_id = new_repo_id or f"{repo_id}_reviewed"
+    decisions_path = DEMO_DECISIONS_DIR / f"{Path(repo_id).name}_decisions.json"
+    decisions: dict[str, DemoDecision] = (
+        json.loads(decisions_path.read_text()) if decisions_path.exists() else {}
+    )
+    episodes = load_episodes(root)
+    to_review = [i for i, e in enumerate(episodes) if show_all or str(e.index) not in decisions]
+    print(
+        f"{len(episodes)} episodes in {root}, {sum(bool(e.reward_offsets) for e in episodes)} with a recorded "
+        f"success. {len(to_review)} to review."
+    )
+    source = LeRobotDataset(repo_id, root=root)
+    if to_review:
+        if not review_demos(source, episodes, to_review, decisions, pending_delete):
+            print("Quit without saving this session.")
+            return
+        decisions_path.parent.mkdir(parents=True, exist_ok=True)
+        decisions_path.write_text(json.dumps(decisions, indent=1))
+
+    reviewed = sum(str(e.index) in decisions for e in episodes)
+    print(f"Reviewed {reviewed}/{len(episodes)} episodes. Decisions saved to {decisions_path}.")
+    for episode in episodes:
+        decision = demo_decision(episode, decisions, pending_delete)
+        if decision != default_demo_decision():
+            print(
+                f"  ep {episode.index:3d} (logged {episode.index + 1:3d}): {describe_demo(episode, decision)}"
+            )
+    if reviewed < len(episodes) and not write:
+        print("Run again to continue, or pass --write to write the reviewed dataset now.")
+        return
+    if (HF_LEROBOT_HOME / new_repo_id).exists():
+        raise FileExistsError(f"{HF_LEROBOT_HOME / new_repo_id} already exists, pass another --new-repo-id.")
+    dataset = write_reviewed_demos(source, episodes, decisions, pending_delete, new_repo_id)
+    print(
+        f"Wrote {dataset.meta.total_episodes} episodes ({dataset.meta.total_frames} frames) to {dataset.root} "
+        f"({root} is unchanged). Point `dataset.repo_id` at {new_repo_id} to use it."
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--run-dir", type=Path, required=True, help="Output directory of the learner.")
+    parser.add_argument("--run-dir", type=Path, default=None, help="Output directory of the learner.")
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        metavar="REPO_ID",
+        help="Review a recorded demo dataset (under $HF_LEROBOT_HOME) instead of a run's replay buffers.",
+    )
+    parser.add_argument(
+        "--delete",
+        type=int,
+        nargs="*",
+        default=[],
+        help="With --dataset: episode indexes marked for deletion until reviewed (x keeps one).",
+    )
+    parser.add_argument(
+        "--new-repo-id",
+        default=None,
+        help="With --dataset: the reviewed copy. Defaults to `<dataset>_reviewed`.",
+    )
     parser.add_argument(
         "--output-run-dir",
         type=Path,
@@ -452,6 +732,11 @@ def main():
         "--holdout", type=float, default=0.15, help="Fraction of episodes left out of the export."
     )
     args = parser.parse_args()
+    if (args.run_dir is None) == (args.dataset is None):
+        parser.error("pass one of --run-dir or --dataset")
+    if args.dataset is not None:
+        main_demos(args.dataset, args.new_repo_id, set(args.delete), args.all, args.write)
+        return
 
     run_dir: Path = args.run_dir.resolve()
     output_dir: Path = (args.output_run_dir or run_dir.with_name(run_dir.name + "_relabeled")).resolve()

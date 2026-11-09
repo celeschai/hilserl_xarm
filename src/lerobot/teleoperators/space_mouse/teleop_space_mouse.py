@@ -301,6 +301,22 @@ class SpaceMouseTeleop(Teleoperator):
             self._is_intervention = False
         return status
 
+    def take_episode_label(self) -> TeleopEvents | None:
+        """
+        Take a pending success / failure key so it does not end the current episode, e.g. while it still
+        relabels the previous one. Unlike `reset_episode_events`, the intervention latch and a pending re-record
+        key are left as they are.
+
+        Returns:
+            `TeleopEvents.SUCCESS` or `TeleopEvents.FAILURE` if that key was pressed, else None.
+        """
+        with self._events_lock:
+            status = self._episode_end_status
+            if status not in (TeleopEvents.SUCCESS, TeleopEvents.FAILURE):
+                return None
+            self._episode_end_status = None
+        return status
+
     @check_if_not_connected
     def disconnect(self) -> None:
         self._stop_event.set()

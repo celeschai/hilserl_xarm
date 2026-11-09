@@ -143,3 +143,23 @@ def test_rotation_follows_axis_mapping(make_teleop, axis_mapping, puck_rotation,
     teleop._rotation[:] = puck_rotation
     action = teleop.get_action()
     assert [action["delta_rx"], action["delta_ry"], action["delta_rz"]] == pytest.approx(list(expected))
+
+
+def test_take_episode_label(make_teleop):
+    teleop = make_teleop()
+    teleop._is_intervention = True
+    assert teleop.take_episode_label() is None
+
+    teleop._episode_end_status = TeleopEvents.SUCCESS
+    assert teleop.take_episode_label() == TeleopEvents.SUCCESS
+    # Taken, so it does not end the current episode, and the intervention latch is kept.
+    assert not teleop.get_teleop_events()[TeleopEvents.SUCCESS]
+    assert teleop._is_intervention
+
+    teleop._episode_end_status = TeleopEvents.FAILURE
+    assert teleop.take_episode_label() == TeleopEvents.FAILURE
+
+    # A re-record key is left for the current episode.
+    teleop._episode_end_status = TeleopEvents.RERECORD_EPISODE
+    assert teleop.take_episode_label() is None
+    assert teleop.get_teleop_events()[TeleopEvents.RERECORD_EPISODE]
